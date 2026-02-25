@@ -80,9 +80,16 @@ export default function HardwareInfo() {
                 <MemoryStick className="h-4 w-4 text-accent" />
                 <span className="text-xs text-foreground-muted">RAM</span>
               </div>
-              <p className="text-sm font-medium text-foreground">
+              <p className="text-sm font-medium text-foreground mb-2">
                 {formatSize(info.totalRam)}
               </p>
+              <div className="h-1.5 bg-surface-hover rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-accent/60 rounded-full"
+                  style={{ width: `${Math.min(100, Math.max(10, (info.totalRam / (32 * 1024 * 1024 * 1024)) * 100))}%` }}
+                  title={`${formatSize(info.totalRam)} total`}
+                />
+              </div>
             </div>
 
             <div className="bg-surface border border-surface-border rounded-lg p-4">
@@ -94,9 +101,18 @@ export default function HardwareInfo() {
                 {info.gpuName || "Not detected"}
               </p>
               {info.vram && (
-                <p className="text-xs text-foreground-muted mt-0.5">
-                  {formatSize(info.vram)} VRAM
-                </p>
+                <>
+                  <p className="text-xs text-foreground-muted mt-0.5 mb-1.5">
+                    {formatSize(info.vram)} VRAM
+                  </p>
+                  <div className="h-1.5 bg-surface-hover rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-accent/60 rounded-full"
+                      style={{ width: `${Math.min(100, Math.max(10, (info.vram / (24 * 1024 * 1024 * 1024)) * 100))}%` }}
+                      title={`${formatSize(info.vram)} VRAM`}
+                    />
+                  </div>
+                </>
               )}
             </div>
           </div>

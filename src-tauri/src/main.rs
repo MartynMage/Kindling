@@ -11,6 +11,10 @@ pub struct AppState {
     pub db: Mutex<Database>,
     pub ollama_url: Mutex<String>,
     pub stream_cancelled: Mutex<bool>,
+    pub pull_cancelled: Mutex<bool>,
+    pub training_cancelled: Mutex<bool>,
+    /// Tracks the conversation currently being streamed (prevents concurrent sends)
+    pub active_stream: Mutex<Option<String>>,
     pub client: reqwest::Client,
 }
 
@@ -31,7 +35,13 @@ fn main() {
             db: Mutex::new(database),
             ollama_url: Mutex::new(ollama_url),
             stream_cancelled: Mutex::new(false),
-            client: reqwest::Client::new(),
+            pull_cancelled: Mutex::new(false),
+            training_cancelled: Mutex::new(false),
+            active_stream: Mutex::new(None),
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("Failed to build HTTP client"),
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat::send_message,
@@ -43,8 +53,10 @@ fn main() {
             commands::conversations::rename_conversation,
             commands::conversations::export_conversation,
             commands::conversations::search_messages,
+            commands::conversations::delete_messages_after,
             commands::models::list_models,
             commands::models::pull_model,
+            commands::models::cancel_pull,
             commands::models::delete_model,
             commands::prompts::list_system_prompts,
             commands::prompts::create_system_prompt,

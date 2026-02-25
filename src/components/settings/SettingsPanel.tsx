@@ -25,6 +25,7 @@ export default function SettingsPanel({
     theme: "dark",
   });
   const [checking, setChecking] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"general" | "prompts" | "hardware">(
     "general"
@@ -57,11 +58,14 @@ export default function SettingsPanel({
     setSettings((s) => ({ ...s, ...updates }));
     setSaveError(null);
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    setSaving(true);
     saveTimerRef.current = setTimeout(async () => {
       try {
         await api.updateSettings(updates);
       } catch (err) {
         setSaveError(err instanceof Error ? err.message : "Failed to save setting");
+      } finally {
+        setSaving(false);
       }
     }, 300);
   };
@@ -185,9 +189,14 @@ export default function SettingsPanel({
 
             {/* Model parameters */}
             <div className="bg-surface border border-surface-border rounded-lg p-4">
-              <h3 className="text-sm font-medium text-foreground mb-4">
-                Model Parameters
-              </h3>
+              <div className="flex items-center gap-2 mb-4">
+                <h3 className="text-sm font-medium text-foreground">
+                  Model Parameters
+                </h3>
+                {saving && (
+                  <span className="text-[10px] text-foreground-muted animate-pulse">Saving...</span>
+                )}
+              </div>
 
               <div className="space-y-4">
                 <div>
@@ -196,7 +205,7 @@ export default function SettingsPanel({
                       Temperature
                     </label>
                     <span className="text-xs text-foreground-muted">
-                      {settings.temperature}
+                      {settings.temperature.toFixed(1)}
                     </span>
                   </div>
                   <input
@@ -242,7 +251,7 @@ export default function SettingsPanel({
                       Top P
                     </label>
                     <span className="text-xs text-foreground-muted">
-                      {settings.topP}
+                      {settings.topP.toFixed(2)}
                     </span>
                   </div>
                   <input
@@ -281,6 +290,36 @@ export default function SettingsPanel({
                     className="w-full accent-accent"
                   />
                 </div>
+              </div>
+            </div>
+
+            {/* Reset to Defaults */}
+            <div className="bg-surface border border-surface-border rounded-lg p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-medium text-foreground">
+                    Reset Parameters
+                  </h3>
+                  <p className="text-xs text-foreground-muted mt-0.5">
+                    Restore temperature, context length, top_p, and top_k to defaults
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const defaults = {
+                      temperature: 0.7,
+                      contextLength: 4096,
+                      topP: 0.9,
+                      topK: 40,
+                    };
+                    setSettings((s) => ({ ...s, ...defaults }));
+                    api.updateSettings(defaults).catch(() => {});
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium text-foreground-muted border border-surface-border hover:text-foreground hover:bg-surface-hover transition-colors"
+                >
+                  Reset
+                </button>
               </div>
             </div>
 

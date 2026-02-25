@@ -4,6 +4,7 @@ import Sidebar from "./components/sidebar/Sidebar";
 import ChatView from "./components/chat/ChatView";
 import KeyboardShortcutsOverlay from "./components/KeyboardShortcutsOverlay";
 import OnboardingFlow from "./components/OnboardingFlow";
+import ErrorBoundary from "./components/ErrorBoundary";
 import type { View, Conversation, OllamaModel } from "./lib/types";
 import * as api from "./lib/api";
 
@@ -39,6 +40,17 @@ export default function App() {
   const selectedModelRef = useRef(selectedModel);
   selectedModelRef.current = selectedModel;
 
+  // Auto-collapse sidebar on narrow viewports
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const handler = (e: MediaQueryListEvent | MediaQueryList) => {
+      if (e.matches) setSidebarOpen(false);
+    };
+    handler(mq); // initial check
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
   // Apply theme to document
   useEffect(() => {
     let resolvedTheme: "dark" | "light";
@@ -60,17 +72,20 @@ export default function App() {
     }
   }, [theme]);
 
-  // Load theme from settings on startup
+  // Load theme and default model from settings on startup
   useEffect(() => {
-    async function loadTheme() {
+    async function loadSettings() {
       try {
         const settings = await api.getSettings();
         if (settings.theme) setTheme(settings.theme);
+        if (settings.defaultModel) {
+          setSelectedModel(settings.defaultModel);
+        }
       } catch {
-        // Use default
+        // Use defaults
       }
     }
-    loadTheme();
+    loadSettings();
   }, []);
 
   const loadConversations = useCallback(async () => {
@@ -94,9 +109,11 @@ export default function App() {
     }
   }, []);
 
+  const creatingChatRef = useRef(false);
   const handleNewChat = useCallback(async () => {
     const currentModel = selectedModelRef.current;
-    if (!currentModel) return;
+    if (!currentModel || creatingChatRef.current) return;
+    creatingChatRef.current = true;
     try {
       const conversation = await api.createConversation(currentModel);
       setConversations((prev) => [conversation, ...prev]);
@@ -104,6 +121,8 @@ export default function App() {
       setView("chat");
     } catch (err) {
       console.error("Failed to create conversation:", err);
+    } finally {
+      creatingChatRef.current = false;
     }
   }, []);
 
@@ -137,6 +156,27 @@ export default function App() {
     init();
   }, [loadConversations]);
 
+  // Periodic connection check — reconnect when Ollama comes back online
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const connected = await api.checkOllamaConnection();
+        if (connected && !ollamaConnected) {
+          setOllamaConnected(true);
+          loadModels();
+          loadConversations();
+        } else if (!connected && ollamaConnected) {
+          setOllamaConnected(false);
+        }
+      } catch {
+        // Ignore check errors
+      }
+    }, 30000); // Check every 30 seconds
+    return () => clearInterval(interval);
+  }, [ollamaConnected, loadModels, loadConversations]);
+
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
   // Keyboard shortcuts — stable dependency array
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -160,11 +200,18 @@ export default function App() {
         e.preventDefault();
         setShowShortcuts((prev) => !prev);
       }
+      // Ctrl/Cmd + F: Focus search (when sidebar is open)
+      if ((e.ctrlKey || e.metaKey) && e.key === "f") {
+        if (sidebarOpen && searchInputRef.current) {
+          e.preventDefault();
+          searchInputRef.current.focus();
+        }
+      }
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleNewChat]);
+  }, [handleNewChat, sidebarOpen]);
 
   const handleDeleteConversation = useCallback(async (id: string) => {
     try {
@@ -226,7 +273,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background">
+    <div className="flex h-screen w-screen overflow-hidden bg-background animate-fade-in">
       <Sidebar
         open={sidebarOpen}
         onToggle={handleToggleSidebar}
@@ -238,9 +285,14 @@ export default function App() {
         onConversationsChanged={loadConversations}
         models={models}
         selectedModel={selectedModel}
-        onSelectModel={setSelectedModel}
+        onSelectModel={(m: string) => {
+          setSelectedModel(m);
+          api.updateSettings({ defaultModel: m }).catch(() => {});
+        }}
         view={view}
         onChangeView={setView}
+        searchInputRef={searchInputRef}
+        ollamaConnected={ollamaConnected}
       />
 
       <main className="flex-1 flex flex-col overflow-hidden" aria-label="Main content">
@@ -265,26 +317,32 @@ export default function App() {
               />
             )}
             {view === "models" && (
-              <Suspense fallback={<LazyFallback />}>
-                <ModelBrowser models={models} onModelsChanged={loadModels} />
-              </Suspense>
+              <ErrorBoundary fallbackMessage="The model browser encountered an error.">
+                <Suspense fallback={<LazyFallback />}>
+                  <ModelBrowser models={models} onModelsChanged={loadModels} />
+                </Suspense>
+              </ErrorBoundary>
             )}
             {view === "training" && (
-              <Suspense fallback={<LazyFallback />}>
-                <TrainingWizard
-                  models={models}
-                  onComplete={handleTrainingComplete}
-                />
-              </Suspense>
+              <ErrorBoundary fallbackMessage="The training wizard encountered an error.">
+                <Suspense fallback={<LazyFallback />}>
+                  <TrainingWizard
+                    models={models}
+                    onComplete={handleTrainingComplete}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             )}
             {view === "settings" && (
-              <Suspense fallback={<LazyFallback />}>
-                <SettingsPanel
-                  ollamaConnected={ollamaConnected}
-                  onConnectionChange={handleConnectionChange}
-                  onThemeChange={handleThemeChange}
-                />
-              </Suspense>
+              <ErrorBoundary fallbackMessage="The settings panel encountered an error.">
+                <Suspense fallback={<LazyFallback />}>
+                  <SettingsPanel
+                    ollamaConnected={ollamaConnected}
+                    onConnectionChange={handleConnectionChange}
+                    onThemeChange={handleThemeChange}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             )}
           </>
         )}

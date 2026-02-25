@@ -1,5 +1,6 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OllamaModel {
@@ -80,21 +81,38 @@ pub struct DeleteRequest {
 
 pub struct OllamaClient {
     client: Client,
-    base_url: String,
+    base_url: Url,
 }
 
 impl OllamaClient {
     pub fn new(base_url: &str, client: Client) -> Self {
+        // Ensure the base URL ends with a trailing slash so Url::join works correctly
+        let normalized = if base_url.ends_with('/') {
+            base_url.to_string()
+        } else {
+            format!("{}/", base_url)
+        };
+        let parsed = Url::parse(&normalized).unwrap_or_else(|_| {
+            Url::parse("http://localhost:11434/").expect("hardcoded URL is valid")
+        });
         OllamaClient {
             client,
-            base_url: base_url.to_string(),
+            base_url: parsed,
         }
+    }
+
+    /// Build a full endpoint URL by joining a relative path onto the base.
+    fn endpoint(&self, path: &str) -> String {
+        self.base_url
+            .join(path)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| format!("{}{}", self.base_url, path))
     }
 
     pub async fn check_connection(&self) -> bool {
         self.client
-            .get(&self.base_url)
-            .timeout(std::time::Duration::from_secs(3))
+            .get(self.endpoint("api/tags"))
+            .timeout(std::time::Duration::from_secs(5))
             .send()
             .await
             .map(|r| r.status().is_success())
@@ -104,7 +122,7 @@ impl OllamaClient {
     pub async fn list_models(&self) -> Result<Vec<OllamaModel>, reqwest::Error> {
         let resp = self
             .client
-            .get(format!("{}/api/tags", self.base_url))
+            .get(self.endpoint("api/tags"))
             .send()
             .await?
             .json::<ListModelsResponse>()
@@ -126,7 +144,7 @@ impl OllamaClient {
         };
         let resp = self
             .client
-            .post(format!("{}/api/chat", self.base_url))
+            .post(self.endpoint("api/chat"))
             .json(&req)
             .send()
             .await?
@@ -143,7 +161,7 @@ impl OllamaClient {
             stream: true,
         };
         self.client
-            .post(format!("{}/api/pull", self.base_url))
+            .post(self.endpoint("api/pull"))
             .json(&req)
             .send()
             .await
@@ -154,7 +172,7 @@ impl OllamaClient {
             name: name.to_string(),
         };
         self.client
-            .delete(format!("{}/api/delete", self.base_url))
+            .delete(self.endpoint("api/delete"))
             .json(&req)
             .send()
             .await?

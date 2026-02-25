@@ -62,6 +62,12 @@ pub async fn pull_model(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<(), String> {
+    // Reset pull cancellation flag
+    {
+        let mut cancelled = state.pull_cancelled.lock().map_err(|_| "Internal error: lock failed".to_string())?;
+        *cancelled = false;
+    }
+
     let url = state.ollama_url.lock().map_err(|_| "Internal error: lock failed".to_string())?.clone();
     let client = OllamaClient::new(&url, state.client.clone());
     let response = client.pull_model(&name).await.map_err(|e| e.to_string())?;
@@ -70,6 +76,23 @@ pub async fn pull_model(
     let mut buffer = String::new();
 
     while let Some(chunk_result) = stream.next().await {
+        // Check cancellation
+        {
+            let cancelled = state.pull_cancelled.lock().unwrap_or_else(|e| e.into_inner());
+            if *cancelled {
+                app.emit(
+                    "model-pull-progress",
+                    ModelPullProgressEvent {
+                        status: "cancelled".to_string(),
+                        digest: None,
+                        total: None,
+                        completed: None,
+                    },
+                ).ok();
+                return Ok(());
+            }
+        }
+
         match chunk_result {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
@@ -101,6 +124,18 @@ pub async fn pull_model(
         }
     }
 
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cancel_pull(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut cancelled = state
+        .pull_cancelled
+        .lock()
+        .map_err(|_| "Internal error: failed to acquire lock".to_string())?;
+    *cancelled = true;
     Ok(())
 }
 

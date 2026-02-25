@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Plus, Trash2, Edit3, Save, X } from "lucide-react";
+import { Plus, Trash2, Edit3, Save, X, AlertTriangle } from "lucide-react";
 import type { SystemPrompt } from "@/lib/types";
 import * as api from "@/lib/api";
 
@@ -9,6 +9,7 @@ export default function SystemPrompts() {
   const [editName, setEditName] = useState("");
   const [editContent, setEditContent] = useState("");
   const [creating, setCreating] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadPrompts = useCallback(async (signal?: { cancelled: boolean }) => {
@@ -54,8 +55,8 @@ export default function SystemPrompts() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Delete this system prompt?")) return;
     setError(null);
+    setConfirmDeleteId(null);
     try {
       await api.deleteSystemPrompt(id);
       loadPrompts();
@@ -196,26 +197,48 @@ export default function SystemPrompts() {
                   </p>
                 </div>
                 <div className="flex gap-1 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditing(prompt.id);
-                      setCreating(false);
-                      setEditName(prompt.name);
-                      setEditContent(prompt.content);
-                      setError(null);
-                    }}
-                    className="p-1.5 rounded text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-colors"
-                  >
-                    <Edit3 className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(prompt.id)}
-                    className="p-1.5 rounded text-foreground-muted hover:text-red-400 hover:bg-surface-hover transition-colors"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  {confirmDeleteId === prompt.id ? (
+                    <div className="flex items-center gap-1.5">
+                      <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(prompt.id)}
+                        className="px-2 py-0.5 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(null)}
+                        className="px-2 py-0.5 text-xs text-foreground-muted hover:text-foreground rounded"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditing(prompt.id);
+                          setCreating(false);
+                          setEditName(prompt.name);
+                          setEditContent(prompt.content);
+                          setError(null);
+                        }}
+                        className="p-1.5 rounded text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-colors"
+                      >
+                        <Edit3 className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(prompt.id)}
+                        className="p-1.5 rounded text-foreground-muted hover:text-red-400 hover:bg-surface-hover transition-colors"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             )}

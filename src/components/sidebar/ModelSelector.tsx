@@ -124,8 +124,14 @@ export default function ModelSelector({
                     ? "text-accent"
                     : "text-foreground"
                 }`}
+                title={`${model.details.family} · ${model.details.parameterSize} · ${model.details.quantizationLevel}`}
               >
-                <span className="truncate">{model.name}</span>
+                <div className="flex flex-col items-start min-w-0 flex-1">
+                  <span className="truncate w-full">{model.name}</span>
+                  <span className="text-[10px] text-foreground-muted truncate w-full">
+                    {model.details.parameterSize} · {model.details.quantizationLevel}
+                  </span>
+                </div>
                 <span className="text-xs text-foreground-muted shrink-0 ml-2">
                   {formatSize(model.size)}
                 </span>

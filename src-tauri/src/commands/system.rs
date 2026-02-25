@@ -3,6 +3,7 @@ use crate::AppState;
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 use tauri::State;
+use url::Url;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -108,8 +109,11 @@ pub fn update_settings(
 ) -> Result<(), String> {
     // Validate inputs
     if let Some(url) = &settings.ollama_url {
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err("Ollama URL must start with http:// or https://".to_string());
+        if !is_localhost_url(url) {
+            return Err(
+                "Ollama URL must point to localhost (127.0.0.1, ::1, or localhost) for security."
+                    .to_string(),
+            );
         }
     }
     if let Some(temp) = settings.temperature {
@@ -173,4 +177,25 @@ pub async fn check_ollama_connection(state: State<'_, AppState>) -> Result<bool,
     let url = state.ollama_url.lock().map_err(|_| "Internal error: lock failed".to_string())?.clone();
     let client = OllamaClient::new(&url, state.client.clone());
     Ok(client.check_connection().await)
+}
+
+/// Validate that a URL points to localhost only (SSRF prevention).
+/// Accepts http:// or https:// schemes with host 127.0.0.1, ::1, or localhost.
+fn is_localhost_url(raw_url: &str) -> bool {
+    let parsed = match Url::parse(raw_url) {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+
+    // Only allow http/https schemes
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => return false,
+    }
+
+    // Check host is strictly localhost
+    match parsed.host_str() {
+        Some("localhost") | Some("127.0.0.1") | Some("[::1]") | Some("::1") => true,
+        _ => false,
+    }
 }

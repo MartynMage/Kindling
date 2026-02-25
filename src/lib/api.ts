@@ -21,13 +21,15 @@ export async function sendMessage(
   conversationId: string,
   content: string,
   model: string,
-  systemPrompt?: string
+  systemPrompt?: string,
+  skipUserSave?: boolean
 ) {
   return invoke<void>("send_message", {
     conversationId,
     content,
     model,
     systemPrompt,
+    skipUserSave,
   });
 }
 
@@ -72,6 +74,10 @@ export async function searchMessages(query: string) {
   return invoke<SearchResult[]>("search_messages", { query });
 }
 
+export async function deleteMessagesAfter(conversationId: string, afterMessageId: string) {
+  return invoke<number>("delete_messages_after", { conversationId, afterMessageId });
+}
+
 // --- Models ---
 
 export async function listModels() {
@@ -88,8 +94,18 @@ export function onModelPullProgress(callback: (event: ModelPullProgress) => void
   );
 }
 
+export async function cancelPull() {
+  return invoke<void>("cancel_pull");
+}
+
 export async function deleteModel(name: string) {
   return invoke<void>("delete_model", { name });
+}
+
+export function onTitleUpdated(callback: (event: { conversationId: string; title: string }) => void) {
+  return listen<{ conversationId: string; title: string }>("conversation-title-updated", (e) =>
+    callback(e.payload)
+  );
 }
 
 // --- System Prompts ---

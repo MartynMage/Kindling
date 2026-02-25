@@ -163,10 +163,8 @@ pub async fn start_training(
 pub async fn stop_training(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    // Signal the training to stop via the stream_cancelled flag
-    // The training loop checks this flag and will terminate
     let mut cancelled = state
-        .stream_cancelled
+        .training_cancelled
         .lock()
         .map_err(|_| "Internal error: failed to acquire lock".to_string())?;
     *cancelled = true;

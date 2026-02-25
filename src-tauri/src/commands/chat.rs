@@ -4,6 +4,10 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+/// Maximum accumulated response size (10 MB) to prevent memory exhaustion from
+/// runaway or malicious Ollama responses.
+const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatStreamEvent {
@@ -11,6 +15,8 @@ pub struct ChatStreamEvent {
     pub token: Option<String>,
     pub done: bool,
     pub error: Option<String>,
+    /// The database ID of the saved assistant message (sent with done=true)
+    pub message_id: Option<String>,
 }
 
 #[tauri::command]
@@ -21,7 +27,20 @@ pub async fn send_message(
     content: String,
     model: String,
     system_prompt: Option<String>,
+    skip_user_save: Option<bool>,
 ) -> Result<(), String> {
+    // Prevent concurrent sends — only one stream at a time
+    {
+        let mut active = state
+            .active_stream
+            .lock()
+            .map_err(|_| "Internal error: failed to acquire lock".to_string())?;
+        if active.is_some() {
+            return Err("A message is already being generated. Please wait or stop it first.".to_string());
+        }
+        *active = Some(conversation_id.clone());
+    }
+
     // Reset cancellation flag at the start of a new message
     {
         let mut cancelled = state
@@ -37,8 +56,8 @@ pub async fn send_message(
         .map_err(|_| "Internal error: failed to acquire lock".to_string())?
         .clone();
 
-    // Save user message to database
-    {
+    // Save user message to database (skip during regeneration to avoid duplicates)
+    if !skip_user_save.unwrap_or(false) {
         let db = state
             .db
             .lock()
@@ -86,10 +105,19 @@ pub async fn send_message(
 
     // Stream response from Ollama
     let client = OllamaClient::new(&ollama_url, state.client.clone());
-    let response = client
+    let response = match client
         .chat_stream(&model, messages, Some(chat_options))
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // Clear active stream on error
+            if let Ok(mut active) = state.active_stream.lock() {
+                *active = None;
+            }
+            return Err(e.to_string());
+        }
+    };
 
     let mut stream = response.bytes_stream();
     let mut full_response = String::new();
@@ -101,17 +129,23 @@ pub async fn send_message(
             let cancelled = state.stream_cancelled.lock().unwrap_or_else(|e| e.into_inner());
             if *cancelled {
                 // Save whatever we have so far
+                let mut saved_id = None;
                 if !full_response.trim().is_empty() {
                     let db = state.db.lock().map_err(|_| {
                         "Internal error: failed to acquire database lock".to_string()
                     })?;
-                    db.add_message(
+                    let saved_msg = db.add_message(
                         &conversation_id,
                         "assistant",
                         &full_response,
                         Some(&model),
                     )
                     .map_err(|e| format!("Failed to save message: {}", e))?;
+                    saved_id = Some(saved_msg.id);
+                }
+                // Clear active stream
+                if let Ok(mut active) = state.active_stream.lock() {
+                    *active = None;
                 }
                 app.emit(
                     "chat-stream",
@@ -120,6 +154,7 @@ pub async fn send_message(
                         token: None,
                         done: true,
                         error: None,
+                        message_id: saved_id,
                     },
                 )
                 .ok();
@@ -144,6 +179,40 @@ pub async fn send_message(
                     if let Ok(chunk) = serde_json::from_str::<ChatStreamChunk>(&line) {
                         if let Some(ref msg) = chunk.message {
                             full_response.push_str(&msg.content);
+
+                            // Guard against unbounded response accumulation
+                            if full_response.len() > MAX_RESPONSE_SIZE {
+                                // Save what we have and abort
+                                let mut saved_id = None;
+                                if !full_response.trim().is_empty() {
+                                    if let Ok(db) = state.db.lock() {
+                                        if let Ok(saved_msg) = db.add_message(
+                                            &conversation_id,
+                                            "assistant",
+                                            &full_response,
+                                            Some(&model),
+                                        ) {
+                                            saved_id = Some(saved_msg.id);
+                                        }
+                                    }
+                                }
+                                if let Ok(mut active) = state.active_stream.lock() {
+                                    *active = None;
+                                }
+                                app.emit(
+                                    "chat-stream",
+                                    ChatStreamEvent {
+                                        conversation_id: conversation_id.clone(),
+                                        token: None,
+                                        done: true,
+                                        error: Some("Response size limit exceeded".to_string()),
+                                        message_id: saved_id,
+                                    },
+                                )
+                                .ok();
+                                return Ok(());
+                            }
+
                             app.emit(
                                 "chat-stream",
                                 ChatStreamEvent {
@@ -151,23 +220,26 @@ pub async fn send_message(
                                     token: Some(msg.content.clone()),
                                     done: false,
                                     error: None,
+                                    message_id: None,
                                 },
                             )
                             .ok();
                         }
                         if chunk.done {
+                            let mut saved_id = None;
                             // Only save non-empty responses
                             if !full_response.trim().is_empty() {
                                 let db = state.db.lock().map_err(|_| {
                                     "Internal error: failed to acquire database lock".to_string()
                                 })?;
-                                db.add_message(
+                                let saved_msg = db.add_message(
                                     &conversation_id,
                                     "assistant",
                                     &full_response,
                                     Some(&model),
                                 )
                                 .map_err(|e| format!("Failed to save message: {}", e))?;
+                                saved_id = Some(saved_msg.id.clone());
 
                                 // Auto-title if this is the first exchange
                                 if let Ok(messages) = db.get_messages(&conversation_id) {
@@ -176,13 +248,39 @@ pub async fn send_message(
                                             db.get_conversation(&conversation_id)
                                         {
                                             if convo.title == "New conversation" {
-                                                let title = generate_title(&content);
-                                                db.rename_conversation(&conversation_id, &title)
+                                                // Use truncation as fallback title immediately
+                                                let fallback = truncate_as_title(&content);
+                                                db.rename_conversation(&conversation_id, &fallback)
                                                     .ok();
+                                                // Fire off async LLM title generation
+                                                let app2 = app.clone();
+                                                let cid = conversation_id.clone();
+                                                let user_msg = content.clone();
+                                                let assistant_msg = full_response.clone();
+                                                let url = ollama_url.clone();
+                                                let m = model.clone();
+                                                let client2 = state.client.clone();
+                                                tokio::spawn(async move {
+                                                    if let Some(title) = generate_title_with_llm(
+                                                        &url, &client2, &m, &user_msg, &assistant_msg
+                                                    ).await {
+                                                        // We can't access AppState from a detached task,
+                                                        // so emit an event for the frontend to refresh
+                                                        app2.emit("conversation-title-updated", serde_json::json!({
+                                                            "conversationId": cid,
+                                                            "title": title,
+                                                        })).ok();
+                                                    }
+                                                });
                                             }
                                         }
                                     }
                                 }
+                            }
+
+                            // Clear active stream
+                            if let Ok(mut active) = state.active_stream.lock() {
+                                *active = None;
                             }
 
                             app.emit(
@@ -192,6 +290,7 @@ pub async fn send_message(
                                     token: None,
                                     done: true,
                                     error: None,
+                                    message_id: saved_id,
                                 },
                             )
                             .ok();
@@ -200,6 +299,10 @@ pub async fn send_message(
                 }
             }
             Err(e) => {
+                // Clear active stream on error
+                if let Ok(mut active) = state.active_stream.lock() {
+                    *active = None;
+                }
                 app.emit(
                     "chat-stream",
                     ChatStreamEvent {
@@ -207,6 +310,7 @@ pub async fn send_message(
                         token: None,
                         done: true,
                         error: Some(e.to_string()),
+                        message_id: None,
                     },
                 )
                 .ok();
@@ -227,11 +331,17 @@ pub async fn send_message(
                         token: Some(msg.content.clone()),
                         done: false,
                         error: None,
+                        message_id: None,
                     },
                 )
                 .ok();
             }
         }
+    }
+
+    // Clear active stream when function exits normally
+    if let Ok(mut active) = state.active_stream.lock() {
+        *active = None;
     }
 
     Ok(())
@@ -249,7 +359,7 @@ pub async fn stop_streaming(
     Ok(())
 }
 
-fn generate_title(first_message: &str) -> String {
+fn truncate_as_title(first_message: &str) -> String {
     let trimmed = first_message.trim();
     if trimmed.len() <= 40 {
         trimmed.to_string()
@@ -257,4 +367,68 @@ fn generate_title(first_message: &str) -> String {
         let truncated: String = trimmed.chars().take(37).collect();
         format!("{}...", truncated.trim_end())
     }
+}
+
+/// Generate a conversation title using the LLM itself
+async fn generate_title_with_llm(
+    ollama_url: &str,
+    client: &reqwest::Client,
+    model: &str,
+    user_message: &str,
+    assistant_response: &str,
+) -> Option<String> {
+    use crate::ollama::{ChatRequest};
+
+    let prompt = format!(
+        "Generate a short title (max 6 words) for this conversation. Reply with ONLY the title, no quotes or punctuation.\n\nUser: {}\nAssistant: {}",
+        &user_message[..user_message.len().min(200)],
+        &assistant_response[..assistant_response.len().min(200)]
+    );
+
+    let req = ChatRequest {
+        model: model.to_string(),
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: prompt,
+        }],
+        stream: false,
+        options: Some(ChatOptions {
+            temperature: Some(0.3),
+            top_p: None,
+            top_k: None,
+            num_ctx: Some(256),
+        }),
+    };
+
+    let base = if ollama_url.ends_with('/') {
+        ollama_url.to_string()
+    } else {
+        format!("{}/", ollama_url)
+    };
+    let endpoint = url::Url::parse(&base)
+        .and_then(|u| u.join("api/chat"))
+        .map(|u| u.to_string())
+        .unwrap_or_else(|_| format!("{}/api/chat", ollama_url));
+
+    let resp = client
+        .post(endpoint)
+        .json(&req)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .ok()?;
+
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let title = json["message"]["content"]
+        .as_str()?
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string();
+
+    if title.is_empty() || title.len() > 80 {
+        return None;
+    }
+
+    Some(title)
 }

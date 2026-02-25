@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import MessageBubble from "./MessageBubble";
 import InputBar from "./InputBar";
-import { Flame, Loader2, RefreshCw, ChevronDown } from "lucide-react";
+import type { InputBarHandle } from "./InputBar";
+import { Flame, Loader2, RefreshCw, ChevronDown, ArrowDown } from "lucide-react";
 import type { Message, Conversation, ChatStreamEvent, SystemPrompt } from "@/lib/types";
 import * as api from "@/lib/api";
 
@@ -12,6 +13,23 @@ interface ChatViewProps {
   onConversationCreated: (convo: Conversation) => void;
   onConversationUpdated: () => void;
   onRetryConnection: () => Promise<void>;
+}
+
+/** Map raw Ollama/backend errors to user-friendly messages */
+function friendlyError(raw: string): string {
+  if (raw.includes("connection refused") || raw.includes("Connection refused"))
+    return "Cannot connect to Ollama. Make sure it is running.";
+  if (raw.includes("model") && raw.includes("not found"))
+    return "Model not found. It may have been deleted — try selecting a different model.";
+  if (raw.includes("context length") || raw.includes("num_ctx"))
+    return "The context length is too large for this model. Try a smaller value in Settings.";
+  if (raw.includes("out of memory") || raw.includes("OOM"))
+    return "Out of memory. Try a smaller model or reduce the context length.";
+  if (raw.includes("Response size limit"))
+    return "The response was too long and was cut short.";
+  if (raw.includes("timeout") || raw.includes("Timeout"))
+    return "Request timed out. Ollama may be busy — try again.";
+  return raw;
 }
 
 export default function ChatView({
@@ -31,7 +49,17 @@ export default function ChatView({
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
   const [showPromptPicker, setShowPromptPicker] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const promptPickerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<InputBarHandle>(null);
+  const [userScrolledUp, setUserScrolledUp] = useState(false);
+
+  // Auto-focus input when conversation changes
+  useEffect(() => {
+    // Small delay so the DOM settles after state update
+    const timer = setTimeout(() => inputRef.current?.focus(), 50);
+    return () => clearTimeout(timer);
+  }, [conversationId]);
 
   // Refs to avoid stale closures in event listeners
   const activeConvoRef = useRef(conversationId);
@@ -41,6 +69,8 @@ export default function ChatView({
   const streamingContentRef = useRef("");
   const scrollThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedPromptRef = useRef<string | null>(null);
+  // Track whether we stopped manually (to avoid duplicate message on done event)
+  const stoppedManuallyRef = useRef(false);
 
   useEffect(() => { activeConvoRef.current = conversationId; }, [conversationId]);
   useEffect(() => { modelRef.current = model; }, [model]);
@@ -91,9 +121,8 @@ export default function ChatView({
         const data = await api.getConversation(conversationId!);
         if (!cancelled) {
           setMessages(data.messages);
-          if (data.conversation.systemPromptId) {
-            setSelectedPromptId(data.conversation.systemPromptId);
-          }
+          // Restore or reset system prompt for this conversation
+          setSelectedPromptId(data.conversation.systemPromptId || null);
         }
       } catch {
         if (!cancelled) setMessages([]);
@@ -105,9 +134,22 @@ export default function ChatView({
     return () => { cancelled = true; };
   }, [conversationId]);
 
-  // Auto-scroll — throttled during streaming to avoid jank
+  // Detect when user scrolls up manually
   useEffect(() => {
-    if (isStreaming && streamingContent) {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setUserScrolledUp(distFromBottom > 100);
+    };
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  // Auto-scroll — throttled during streaming, respects user scroll position
+  useEffect(() => {
+    if (userScrolledUp) return;
+    if (isStreaming) {
       if (!scrollThrottleRef.current) {
         scrollThrottleRef.current = setTimeout(() => {
           messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
@@ -117,13 +159,38 @@ export default function ChatView({
     } else {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages, streamingContent, isStreaming]);
+  }, [messages, streamingContent, isStreaming, userScrolledUp]);
 
   useEffect(() => {
     return () => {
       if (scrollThrottleRef.current) clearTimeout(scrollThrottleRef.current);
     };
   }, []);
+
+  // Graceful cleanup — cancel active stream when component unmounts
+  useEffect(() => {
+    return () => {
+      if (isStreamingRef.current) {
+        api.stopStreaming().catch(() => {});
+      }
+    };
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    setUserScrolledUp(false);
+  }, []);
+
+  // Escape key dismisses error banner
+  useEffect(() => {
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === "Escape" && error) {
+        setError(null);
+      }
+    }
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [error]);
 
   // Chat stream listener — stable via refs, no dependency churn
   useEffect(() => {
@@ -134,7 +201,8 @@ export default function ChatView({
         setIsStreaming(false);
         setStreamingContent("");
         streamingContentRef.current = "";
-        setError(event.error);
+        stoppedManuallyRef.current = false;
+        setError(friendlyError(event.error));
         return;
       }
       if (event.token) {
@@ -143,9 +211,11 @@ export default function ChatView({
       }
       if (event.done) {
         const content = streamingContentRef.current;
-        if (content) {
+        // Only append if we didn't already handle this via handleStop
+        if (content && !stoppedManuallyRef.current) {
           const assistantMsg: Message = {
-            id: crypto.randomUUID(),
+            // Use the database ID from the backend if available
+            id: event.messageId || crypto.randomUUID(),
             conversationId: activeConvoRef.current || "",
             role: "assistant",
             content,
@@ -158,12 +228,25 @@ export default function ChatView({
         streamingContentRef.current = "";
         setStreamingContent("");
         setIsStreaming(false);
+        stoppedManuallyRef.current = false;
       }
     });
 
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(() => {});
     };
+  }, []);
+
+  // Listen for LLM-generated title updates
+  useEffect(() => {
+    const unlisten = api.onTitleUpdated((event) => {
+      // The backend saved the title via a separate Ollama call.
+      // We need to update the DB and refresh the conversation list.
+      api.renameConversation(event.conversationId, event.title)
+        .then(() => onConversationUpdatedRef.current())
+        .catch(() => { /* Title update failed silently */ });
+    });
+    return () => { unlisten.then((fn) => fn()); };
   }, []);
 
   // Get the selected system prompt content
@@ -178,6 +261,7 @@ export default function ChatView({
     async (content: string) => {
       if (!content.trim() || isStreamingRef.current) return;
       isStreamingRef.current = true;
+      stoppedManuallyRef.current = false;
 
       setError(null);
       let convoId = activeConvoRef.current;
@@ -222,25 +306,36 @@ export default function ChatView({
   );
 
   const handleStop = useCallback(async () => {
+    // Mark that we stopped manually so the done event doesn't duplicate
+    stoppedManuallyRef.current = true;
     try {
       await api.stopStreaming();
     } catch {
       // Force stop on frontend regardless
     }
+    // Don't append message here — let the backend's done event handle it
+    // (the backend saves the partial response and emits done with the DB ID)
+    // We just clear the streaming state on the frontend
     setIsStreaming(false);
     isStreamingRef.current = false;
+    // Wait briefly for the backend done event to arrive with the saved message
+    // If it doesn't arrive within 500ms, append locally as fallback
     const content = streamingContentRef.current;
-    if (content) {
-      const assistantMsg: Message = {
-        id: crypto.randomUUID(),
-        conversationId: activeConvoRef.current || "",
-        role: "assistant",
-        content,
-        model: modelRef.current,
-        createdAt: new Date().toISOString(),
-      };
-      setMessages((msgs) => [...msgs, assistantMsg]);
-    }
+    setTimeout(() => {
+      // If stoppedManuallyRef is still true, the done event hasn't arrived
+      if (stoppedManuallyRef.current && content) {
+        stoppedManuallyRef.current = false;
+        const assistantMsg: Message = {
+          id: crypto.randomUUID(),
+          conversationId: activeConvoRef.current || "",
+          role: "assistant",
+          content,
+          model: modelRef.current,
+          createdAt: new Date().toISOString(),
+        };
+        setMessages((msgs) => [...msgs, assistantMsg]);
+      }
+    }, 500);
     streamingContentRef.current = "";
     setStreamingContent("");
   }, []);
@@ -255,20 +350,34 @@ export default function ChatView({
     if (lastUserMsgIndex === -1) return;
 
     const lastUserMsg = messages[lastUserMsgIndex];
+
+    // Delete old assistant messages from DB after the last user message
+    try {
+      await api.deleteMessagesAfter(
+        activeConvoRef.current!,
+        lastUserMsg.id
+      );
+    } catch {
+      // Best-effort cleanup
+    }
+
     setMessages((prev) => prev.slice(0, lastUserMsgIndex + 1));
 
     isStreamingRef.current = true;
+    stoppedManuallyRef.current = false;
     setIsStreaming(true);
     setError(null);
     streamingContentRef.current = "";
     setStreamingContent("");
 
     try {
+      // skipUserSave=true prevents the backend from saving a duplicate user message
       await api.sendMessage(
         activeConvoRef.current!,
         lastUserMsg.content,
         modelRef.current,
-        getSelectedPromptContent()
+        getSelectedPromptContent(),
+        true
       );
     } catch {
       setIsStreaming(false);
@@ -293,6 +402,14 @@ export default function ChatView({
   };
 
   const selectedPromptName = systemPrompts.find((p) => p.id === selectedPromptId)?.name;
+
+  // Get last user message content for up-arrow editing
+  const lastUserMessage = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") return messages[i].content;
+    }
+    return undefined;
+  }, [messages]);
 
   const lastAssistantIndex = messages.reduce(
     (lastIdx, msg, idx) => (msg.role === "assistant" ? idx : lastIdx),
@@ -330,6 +447,13 @@ export default function ChatView({
       </div>
     );
   }
+
+  // Open prompt picker when "/" is typed in empty input
+  const handleSlashCommand = useCallback(() => {
+    if (systemPrompts.length > 0) {
+      setShowPromptPicker(true);
+    }
+  }, [systemPrompts.length]);
 
   // System prompt picker component
   const promptPicker = systemPrompts.length > 0 && (
@@ -385,22 +509,39 @@ export default function ChatView({
           <p className="text-xs text-foreground-muted">
             {model
               ? "Start typing to begin a conversation."
-              : "Install a model from the Models tab to get started."}
+              : "Select or install a model to get started."}
           </p>
+          {model && (
+            <div className="mt-3 flex items-center gap-1.5 text-[10px] text-foreground-muted/60">
+              <span className="px-1.5 py-0.5 bg-surface-hover rounded">Enter</span> send
+              <span className="px-1.5 py-0.5 bg-surface-hover rounded ml-2">Shift+Enter</span> new line
+              <span className="px-1.5 py-0.5 bg-surface-hover rounded ml-2">/</span> prompts
+            </div>
+          )}
         </div>
         {error && (
-          <div className="mx-4 mb-2 p-3 bg-red-400/10 border border-red-400/30 rounded-lg">
+          <div role="alert" className="mx-4 mb-2 p-3 bg-red-400/10 border border-red-400/30 rounded-lg flex items-center justify-between">
             <p className="text-sm text-red-400">{error}</p>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="text-xs text-red-400/60 hover:text-red-400 ml-3"
+            >
+              Dismiss
+            </button>
           </div>
         )}
         <div className="px-4 pb-4">
           <div className="max-w-3xl mx-auto">
             {promptPicker}
             <InputBar
+              ref={inputRef}
               onSend={handleSend}
               onStop={handleStop}
               disabled={!model || isStreaming}
               isStreaming={isStreaming}
+              lastUserMessage={lastUserMessage}
+              onSlashCommand={handleSlashCommand}
             />
           </div>
         </div>
@@ -409,12 +550,21 @@ export default function ChatView({
   }
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex-1 overflow-y-auto px-4 py-6">
+    <div className="flex-1 flex flex-col overflow-hidden relative">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-4 py-6">
         <div className="max-w-3xl mx-auto space-y-4">
           {loadingMessages ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-5 w-5 text-foreground-muted animate-spin" />
+            <div className="space-y-4 py-4">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className={`flex gap-3 ${i % 2 === 1 ? "justify-end" : ""}`}>
+                  {i % 2 === 0 && <div className="w-8 h-8 rounded-lg bg-surface-hover animate-pulse shrink-0" />}
+                  <div className={`rounded-2xl px-4 py-3 ${i % 2 === 1 ? "bg-accent/10" : "bg-surface"} space-y-2 max-w-[60%]`}>
+                    <div className="h-3 bg-surface-hover rounded animate-pulse" style={{ width: `${120 + i * 40}px` }} />
+                    <div className="h-3 bg-surface-hover rounded animate-pulse" style={{ width: `${80 + i * 30}px` }} />
+                  </div>
+                  {i % 2 === 1 && <div className="w-8 h-8 rounded-lg bg-surface-hover animate-pulse shrink-0" />}
+                </div>
+              ))}
             </div>
           ) : (
             messages.map((msg, idx) => (
@@ -425,6 +575,21 @@ export default function ChatView({
                 onRegenerate={idx === lastAssistantIndex ? handleRegenerate : undefined}
               />
             ))
+          )}
+          {/* Typing indicator — shows when streaming starts but no content yet */}
+          {isStreaming && !streamingContent && (
+            <div className="group flex gap-3" role="status" aria-label="Generating response">
+              <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
+                <Loader2 className="h-4 w-4 text-accent animate-spin" />
+              </div>
+              <div className="rounded-2xl px-4 py-3 bg-surface text-foreground">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 bg-foreground-muted rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <span className="w-1.5 h-1.5 bg-foreground-muted rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <span className="w-1.5 h-1.5 bg-foreground-muted rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                </div>
+              </div>
+            </div>
           )}
           {isStreaming && streamingContent && (
             <MessageBubble
@@ -442,8 +607,20 @@ export default function ChatView({
         </div>
       </div>
 
+      {/* Scroll to bottom button */}
+      {userScrolledUp && (
+        <button
+          type="button"
+          onClick={scrollToBottom}
+          className="absolute right-6 bottom-24 p-2 rounded-full bg-surface border border-surface-border shadow-lg text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-colors z-10 animate-slide-in-right"
+          aria-label="Scroll to bottom"
+        >
+          <ArrowDown className="h-4 w-4" />
+        </button>
+      )}
+
       {error && (
-        <div className="mx-4 mb-2 p-3 bg-red-400/10 border border-red-400/30 rounded-lg flex items-center justify-between">
+        <div role="alert" className="mx-4 mb-2 p-3 bg-red-400/10 border border-red-400/30 rounded-lg flex items-center justify-between">
           <p className="text-sm text-red-400">{error}</p>
           <button
             type="button"
@@ -457,11 +634,15 @@ export default function ChatView({
 
       <div className="px-4 pb-4">
         <div className="max-w-3xl mx-auto">
+          {promptPicker}
           <InputBar
+            ref={inputRef}
             onSend={handleSend}
             onStop={handleStop}
             disabled={!model || isStreaming}
             isStreaming={isStreaming}
+            lastUserMessage={lastUserMessage}
+            onSlashCommand={handleSlashCommand}
           />
         </div>
       </div>

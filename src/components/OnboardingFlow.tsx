@@ -24,7 +24,7 @@ export default function OnboardingFlow({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => window.open("https://ollama.com", "_blank")}
+            onClick={() => window.open("https://ollama.com/download", "_blank")}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-accent border border-accent/30 hover:bg-accent/10 transition-colors"
           >
             <ExternalLink className="h-3 w-3" /> Get Ollama

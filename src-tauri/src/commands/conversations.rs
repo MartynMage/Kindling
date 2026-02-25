@@ -179,22 +179,24 @@ pub fn export_conversation(
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchResult {
-    pub conversation_id: String,
-    pub conversation_title: String,
-    pub message_id: String,
-    pub role: String,
-    pub content: String,
-    pub created_at: String,
-}
-
 #[tauri::command]
 pub fn search_messages(
     state: State<'_, AppState>,
     query: String,
-) -> Result<Vec<SearchResult>, String> {
+) -> Result<Vec<crate::db::SearchResult>, String> {
     let db = state.db.lock().map_err(|_| "Internal error: database lock".to_string())?;
     db.search_messages(&query).map_err(|e| e.to_string())
+}
+
+/// Delete all messages after a given message ID in a conversation.
+/// Used by regeneration to clean up old assistant messages from the DB before generating a new one.
+#[tauri::command]
+pub fn delete_messages_after(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    after_message_id: String,
+) -> Result<u64, String> {
+    let db = state.db.lock().map_err(|_| "Internal error: database lock".to_string())?;
+    db.delete_messages_after(&conversation_id, &after_message_id)
+        .map_err(|e| e.to_string())
 }

@@ -41,6 +41,8 @@ export interface ChatStreamEvent {
   token?: string;
   done: boolean;
   error?: string;
+  /** The database ID of the saved assistant message (sent with done=true) */
+  messageId?: string;
 }
 
 export interface ModelPullProgress {

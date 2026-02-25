@@ -2,6 +2,19 @@ use rusqlite::{Connection, Result, params};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Search result returned by full-text message search.
+/// Defined here (rather than in commands) to avoid circular module dependencies.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub conversation_id: String,
+    pub conversation_title: String,
+    pub message_id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Conversation {
     pub id: String,
@@ -36,7 +49,7 @@ pub struct Database {
 
 impl Database {
     pub fn new() -> Result<Self> {
-        let app_dir = dirs_next().ok_or_else(|| {
+        let app_dir = app_data_dir().ok_or_else(|| {
             rusqlite::Error::InvalidParameterName(
                 "Could not determine application data directory".to_string(),
             )
@@ -47,14 +60,26 @@ impl Database {
             )
         })?;
         let db_path = app_dir.join("kindling.db");
-        let conn = Connection::open(db_path)?;
+        let conn = Connection::open(&db_path)?;
+
+        // On Unix, restrict database file to owner-only (mode 0600)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if db_path.exists() {
+                let perms = std::fs::Permissions::from_mode(0o600);
+                std::fs::set_permissions(&db_path, perms).ok();
+            }
+        }
+
         let db = Database { conn };
         db.run_migrations()?;
         Ok(db)
     }
 
     fn run_migrations(&self) -> Result<()> {
-        self.conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        // Enable WAL mode for better concurrency and foreign keys for referential integrity
+        self.conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
@@ -84,7 +109,11 @@ impl Database {
                 value TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_messages_conversation
-                ON messages(conversation_id);",
+                ON messages(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_created_at
+                ON messages(conversation_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_conversations_updated
+                ON conversations(updated_at DESC);",
         )?;
         Ok(())
     }
@@ -150,18 +179,31 @@ impl Database {
     }
 
     pub fn delete_conversation(&self, id: &str) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM messages WHERE conversation_id = ?1", params![id])?;
-        self.conn
-            .execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
-        Ok(())
+        // Use a transaction so both deletes succeed or neither does
+        self.conn.execute("BEGIN TRANSACTION", [])?;
+        match (|| -> Result<()> {
+            self.conn.execute("DELETE FROM messages WHERE conversation_id = ?1", params![id])?;
+            self.conn.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+            Ok(())
+        })() {
+            Ok(()) => {
+                self.conn.execute("COMMIT", [])?;
+                Ok(())
+            }
+            Err(e) => {
+                self.conn.execute("ROLLBACK", []).ok();
+                Err(e)
+            }
+        }
     }
 
     pub fn rename_conversation(&self, id: &str, title: &str) -> Result<()> {
+        // Truncate title to prevent oversized values
+        let safe_title: String = title.chars().take(255).collect();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
             "UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3",
-            params![title, now, id],
+            params![safe_title, now, id],
         )?;
         Ok(())
     }
@@ -177,6 +219,12 @@ impl Database {
 
     // --- Messages ---
 
+    /// Maximum message content size: 10 MB.  Messages longer than this are
+    /// truncated before being persisted.  This prevents accidental memory
+    /// bloat from enormous LLM outputs while still allowing very long
+    /// conversations.
+    const MAX_MESSAGE_CONTENT: usize = 10 * 1024 * 1024;
+
     pub fn add_message(
         &self,
         conversation_id: &str,
@@ -184,19 +232,31 @@ impl Database {
         content: &str,
         model: Option<&str>,
     ) -> Result<Message> {
+        // Truncate oversized content to prevent DB bloat
+        let safe_content: &str = if content.len() > Self::MAX_MESSAGE_CONTENT {
+            // Find a valid char boundary near the limit
+            let mut end = Self::MAX_MESSAGE_CONTENT;
+            while !content.is_char_boundary(end) && end > 0 {
+                end -= 1;
+            }
+            &content[..end]
+        } else {
+            content
+        };
+
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO messages (id, conversation_id, role, content, model, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, conversation_id, role, content, model, now],
+            params![id, conversation_id, role, safe_content, model, now],
         )?;
         self.update_conversation_timestamp(conversation_id)?;
         Ok(Message {
             id,
             conversation_id: conversation_id.to_string(),
             role: role.to_string(),
-            content: content.to_string(),
+            content: safe_content.to_string(),
             model: model.map(|s| s.to_string()),
             created_at: now,
         })
@@ -220,18 +280,45 @@ impl Database {
         rows.collect()
     }
 
-    pub fn search_messages(&self, query: &str) -> Result<Vec<crate::commands::conversations::SearchResult>> {
-        let search_pattern = format!("%{}%", query);
+    /// Delete all messages in a conversation after (and including) the message with the given ID.
+    /// Used for regeneration to clean up old assistant messages from the DB.
+    pub fn delete_messages_after(&self, conversation_id: &str, after_message_id: &str) -> Result<u64> {
+        // Get the created_at timestamp of the reference message
+        let mut stmt = self.conn.prepare(
+            "SELECT created_at FROM messages WHERE id = ?1 AND conversation_id = ?2",
+        )?;
+        let ts: Option<String> = stmt
+            .query_map(params![after_message_id, conversation_id], |row| row.get(0))?
+            .next()
+            .transpose()?;
+
+        if let Some(timestamp) = ts {
+            let deleted = self.conn.execute(
+                "DELETE FROM messages WHERE conversation_id = ?1 AND created_at > ?2",
+                params![conversation_id, timestamp],
+            )?;
+            Ok(deleted as u64)
+        } else {
+            Ok(0)
+        }
+    }
+
+    pub fn search_messages(&self, query: &str) -> Result<Vec<SearchResult>> {
+        // Limit query length to prevent DoS
+        let trimmed: String = query.chars().take(500).collect();
+        // Escape LIKE wildcards to prevent unintended matching
+        let escaped = trimmed.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let search_pattern = format!("%{}%", escaped);
         let mut stmt = self.conn.prepare(
             "SELECT m.conversation_id, c.title, m.id, m.role, m.content, m.created_at
              FROM messages m
              JOIN conversations c ON m.conversation_id = c.id
-             WHERE m.content LIKE ?1
+             WHERE m.content LIKE ?1 ESCAPE '\\'
              ORDER BY m.created_at DESC
              LIMIT 50",
         )?;
         let rows = stmt.query_map(params![search_pattern], |row| {
-            Ok(crate::commands::conversations::SearchResult {
+            Ok(SearchResult {
                 conversation_id: row.get(0)?,
                 conversation_title: row.get(1)?,
                 message_id: row.get(2)?,
@@ -261,11 +348,14 @@ impl Database {
     }
 
     pub fn create_system_prompt(&self, name: &str, content: &str) -> Result<SystemPrompt> {
+        // Validate inputs
+        let safe_name: String = name.chars().take(255).collect();
+        let safe_content: String = content.chars().take(50000).collect();
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO system_prompts (id, name, content, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![id, name, content, now],
+            params![id, safe_name, safe_content, now],
         )?;
         Ok(SystemPrompt {
             id,
@@ -308,34 +398,18 @@ impl Database {
     }
 }
 
-fn dirs_next() -> Option<std::path::PathBuf> {
+/// Determine the application data directory using the `dirs` crate for consistency.
+fn app_data_dir() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var("APPDATA")
-            .ok()
-            .map(|p| std::path::PathBuf::from(p).join("Kindling"))
+        dirs::data_dir().map(|p| p.join("Kindling"))
     }
     #[cfg(target_os = "macos")]
     {
-        dirs_next_home().map(|p| {
-            p.join("Library")
-                .join("Application Support")
-                .join("Kindling")
-        })
+        dirs::data_dir().map(|p| p.join("Kindling"))
     }
     #[cfg(target_os = "linux")]
     {
-        std::env::var("XDG_DATA_HOME")
-            .ok()
-            .map(std::path::PathBuf::from)
-            .or_else(|| dirs_next_home().map(|p| p.join(".local").join("share")))
-            .map(|p| p.join("kindling"))
+        dirs::data_dir().map(|p| p.join("kindling"))
     }
-}
-
-#[allow(dead_code)]
-fn dirs_next_home() -> Option<std::path::PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(std::path::PathBuf::from)
 }

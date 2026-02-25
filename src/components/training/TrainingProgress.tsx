@@ -1,19 +1,90 @@
 import { useEffect, useState, useRef } from "react";
 import { Activity, StopCircle } from "lucide-react";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-} from "recharts";
 import type { TrainingProgress as TProgress } from "@/lib/types";
 import * as api from "@/lib/api";
 
 interface TrainingProgressProps {
   onComplete: () => void;
+}
+
+/** Simple SVG line chart — replaces recharts dependency */
+function LossChart({ data }: { data: Array<{ step: number; loss: number }> }) {
+  if (data.length < 2) return null;
+
+  const width = 600;
+  const height = 200;
+  const pad = { top: 10, right: 10, bottom: 25, left: 50 };
+  const chartW = width - pad.left - pad.right;
+  const chartH = height - pad.top - pad.bottom;
+
+  const minStep = data[0].step;
+  const maxStep = data[data.length - 1].step;
+  const losses = data.map((d) => d.loss);
+  const minLoss = Math.min(...losses);
+  const maxLoss = Math.max(...losses);
+  const lossRange = maxLoss - minLoss || 1;
+
+  const toX = (step: number) =>
+    pad.left + ((step - minStep) / (maxStep - minStep || 1)) * chartW;
+  const toY = (loss: number) =>
+    pad.top + (1 - (loss - minLoss) / lossRange) * chartH;
+
+  const pathD = data
+    .map((d, i) => `${i === 0 ? "M" : "L"}${toX(d.step).toFixed(1)},${toY(d.loss).toFixed(1)}`)
+    .join(" ");
+
+  // Generate Y-axis ticks
+  const yTicks = Array.from({ length: 5 }, (_, i) => minLoss + (lossRange * i) / 4);
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[200px]">
+      {/* Grid lines */}
+      {yTicks.map((tick) => (
+        <line
+          key={tick}
+          x1={pad.left}
+          x2={width - pad.right}
+          y1={toY(tick)}
+          y2={toY(tick)}
+          stroke="var(--color-surface-border)"
+          strokeDasharray="3 3"
+        />
+      ))}
+      {/* Y-axis labels */}
+      {yTicks.map((tick) => (
+        <text
+          key={`label-${tick}`}
+          x={pad.left - 6}
+          y={toY(tick) + 3}
+          textAnchor="end"
+          fill="var(--color-foreground-muted)"
+          fontSize={10}
+        >
+          {tick.toFixed(3)}
+        </text>
+      ))}
+      {/* X-axis labels */}
+      <text
+        x={pad.left}
+        y={height - 4}
+        fill="var(--color-foreground-muted)"
+        fontSize={10}
+      >
+        {minStep}
+      </text>
+      <text
+        x={width - pad.right}
+        y={height - 4}
+        textAnchor="end"
+        fill="var(--color-foreground-muted)"
+        fontSize={10}
+      >
+        {maxStep}
+      </text>
+      {/* Loss line */}
+      <path d={pathD} fill="none" stroke="#f97316" strokeWidth={2} />
+    </svg>
+  );
 }
 
 export default function TrainingProgress({ onComplete }: TrainingProgressProps) {
@@ -135,38 +206,7 @@ export default function TrainingProgress({ onComplete }: TrainingProgressProps) 
           <p className="text-xs font-medium text-foreground-secondary mb-3">
             Training Loss
           </p>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={lossHistory}>
-              <CartesianGrid stroke="#2a2a4a" strokeDasharray="3 3" />
-              <XAxis
-                dataKey="step"
-                stroke="#6b6b8a"
-                fontSize={11}
-                tickLine={false}
-              />
-              <YAxis
-                stroke="#6b6b8a"
-                fontSize={11}
-                tickLine={false}
-                domain={["auto", "auto"]}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: "#1a1a2e",
-                  border: "1px solid #2a2a4a",
-                  borderRadius: "8px",
-                  fontSize: "12px",
-                }}
-              />
-              <Line
-                type="monotone"
-                dataKey="loss"
-                stroke="#f97316"
-                strokeWidth={2}
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+          <LossChart data={lossHistory} />
         </div>
       )}
 
