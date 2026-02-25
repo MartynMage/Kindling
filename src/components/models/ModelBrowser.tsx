@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
-import { Download, Trash2, Search, HardDrive } from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
+import { Download, Trash2, Search, HardDrive, AlertTriangle, X, Square } from "lucide-react";
 import type { OllamaModel, ModelPullProgress } from "@/lib/types";
+import { formatSize } from "@/lib/utils";
 import * as api from "@/lib/api";
 
 interface ModelBrowserProps {
@@ -18,18 +19,12 @@ const POPULAR_MODELS = [
   { name: "qwen2.5:7b", description: "Alibaba Qwen 2.5 7B — multilingual", size: "~4.4GB" },
 ];
 
-function formatSize(bytes: number): string {
-  const gb = bytes / (1024 * 1024 * 1024);
-  if (gb >= 1) return `${gb.toFixed(1)} GB`;
-  const mb = bytes / (1024 * 1024);
-  return `${mb.toFixed(0)} MB`;
-}
-
 export default function ModelBrowser({ models, onModelsChanged }: ModelBrowserProps) {
   const [pullName, setPullName] = useState("");
   const [pulling, setPulling] = useState(false);
   const [pullProgress, setPullProgress] = useState<ModelPullProgress | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const unlisten = api.onModelPullProgress((progress) => {
@@ -39,6 +34,12 @@ export default function ModelBrowser({ models, onModelsChanged }: ModelBrowserPr
         setPullProgress(null);
         setPullName("");
         onModelsChanged();
+      }
+      // Handle pull failure from progress events
+      if (progress.status === "error" || progress.status === "failed") {
+        setPulling(false);
+        setPullProgress(null);
+        setError(`Failed to pull model: ${progress.status}`);
       }
     });
     return () => {
@@ -50,27 +51,30 @@ export default function ModelBrowser({ models, onModelsChanged }: ModelBrowserPr
     if (pulling) return;
     setPulling(true);
     setPullName(name);
+    setError(null);
     try {
       await api.pullModel(name);
-    } catch {
+    } catch (err) {
       setPulling(false);
       setPullProgress(null);
+      setError(err instanceof Error ? err.message : `Failed to pull ${name}`);
     }
   };
 
   const handleDelete = async (name: string) => {
     setDeleting(name);
+    setError(null);
     try {
       await api.deleteModel(name);
       onModelsChanged();
     } catch (err) {
-      console.error("Failed to delete model:", err);
+      setError(err instanceof Error ? err.message : `Failed to delete ${name}`);
     } finally {
       setDeleting(null);
     }
   };
 
-  const installedNames = new Set(models.map((m) => m.name));
+  const installedNames = useMemo(() => new Set(models.map((m) => m.name)), [models]);
   const pullPercent =
     pullProgress?.total && pullProgress?.completed
       ? Math.round((pullProgress.completed / pullProgress.total) * 100)
@@ -83,6 +87,21 @@ export default function ModelBrowser({ models, onModelsChanged }: ModelBrowserPr
         <p className="text-sm text-foreground-secondary mb-6">
           Manage your locally installed models
         </p>
+
+        {/* Error banner */}
+        {error && (
+          <div className="flex items-center gap-2 mb-4 p-3 bg-red-400/10 border border-red-400/30 rounded-lg">
+            <AlertTriangle className="h-4 w-4 text-red-400 shrink-0" />
+            <p className="text-sm text-red-400 flex-1">{error}</p>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="p-0.5 text-red-400/60 hover:text-red-400"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
 
         {/* Pull custom model */}
         <div className="mb-8">
@@ -102,6 +121,7 @@ export default function ModelBrowser({ models, onModelsChanged }: ModelBrowserPr
               />
             </div>
             <button
+              type="button"
               onClick={() => pullName.trim() && handlePull(pullName.trim())}
               disabled={pulling || !pullName.trim()}
               className="px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim transition-colors disabled:opacity-40"
@@ -116,10 +136,24 @@ export default function ModelBrowser({ models, onModelsChanged }: ModelBrowserPr
                 <span className="text-sm text-foreground">
                   Pulling {pullName}...
                 </span>
-                <span className="text-xs text-foreground-muted">
-                  {pullProgress?.status || "starting"}
-                  {pullPercent !== null && ` — ${pullPercent}%`}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-foreground-muted">
+                    {pullProgress?.status || "starting"}
+                    {pullPercent !== null && ` — ${pullPercent}%`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPulling(false);
+                      setPullProgress(null);
+                      setPullName("");
+                    }}
+                    className="flex items-center gap-1 px-2 py-1 rounded text-xs text-red-400 hover:bg-red-400/10 transition-colors"
+                    title="Cancel download"
+                  >
+                    <Square className="h-3 w-3" /> Cancel
+                  </button>
+                </div>
               </div>
               <div className="h-2 bg-surface-hover rounded-full overflow-hidden">
                 <div
@@ -161,7 +195,12 @@ export default function ModelBrowser({ models, onModelsChanged }: ModelBrowserPr
                   </p>
                 </div>
                 <button
-                  onClick={() => handleDelete(model.name)}
+                  type="button"
+                  onClick={() => {
+                    if (confirm(`Delete ${model.name}? This cannot be undone.`)) {
+                      handleDelete(model.name);
+                    }
+                  }}
                   disabled={deleting === model.name}
                   className="p-2 rounded-lg text-foreground-muted hover:text-red-400 hover:bg-surface-hover transition-colors"
                 >
@@ -198,6 +237,7 @@ export default function ModelBrowser({ models, onModelsChanged }: ModelBrowserPr
                   </span>
                 ) : (
                   <button
+                    type="button"
                     onClick={() => handlePull(m.name)}
                     disabled={pulling}
                     className="p-2 rounded-lg text-foreground-muted hover:text-accent hover:bg-surface-hover transition-colors disabled:opacity-40"

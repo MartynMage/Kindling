@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Activity, StopCircle } from "lucide-react";
 import {
   LineChart,
@@ -21,37 +21,62 @@ export default function TrainingProgress({ onComplete }: TrainingProgressProps) 
   const [lossHistory, setLossHistory] = useState<
     Array<{ step: number; loss: number }>
   >([]);
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<Array<{ id: number; text: string }>>([]);
+  const logCounterRef = useRef(0);
+  const onCompleteRef = useRef(onComplete);
+
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
 
   useEffect(() => {
     const unlisten = api.onTrainingProgress((event) => {
       setProgress(event);
 
       if (event.loss > 0) {
-        setLossHistory((prev) => [...prev, { step: event.step, loss: event.loss }]);
+        setLossHistory((prev) => {
+          const next = [...prev, { step: event.step, loss: event.loss }];
+          return next.length > 500 ? next.slice(-500) : next;
+        });
       }
 
       if (event.message) {
-        setLogs((prev) => [...prev.slice(-100), event.message!]);
+        const msg = event.message;
+        setLogs((prev) => [...prev.slice(-100), { id: ++logCounterRef.current, text: msg }]);
       }
 
       if (event.status === "complete") {
-        onComplete();
+        onCompleteRef.current();
       }
     });
 
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [onComplete]);
+  }, []);
 
-  const overallPercent = progress
-    ? Math.round(
-        ((progress.epoch - 1) / progress.totalEpochs +
-          progress.step / progress.totalSteps / progress.totalEpochs) *
-          100
-      )
-    : 0;
+  const overallPercent =
+    progress && progress.totalEpochs > 0 && progress.totalSteps > 0
+      ? Math.min(
+          100,
+          Math.max(
+            0,
+            Math.round(
+              ((progress.epoch - 1) / progress.totalEpochs +
+                progress.step / progress.totalSteps / progress.totalEpochs) *
+                100
+            )
+          )
+        )
+      : 0;
+
+  const handleStop = async () => {
+    try {
+      await api.stopTraining();
+    } catch (err) {
+      console.error("Failed to stop training:", err);
+    }
+  };
 
   return (
     <div>
@@ -66,17 +91,27 @@ export default function TrainingProgress({ onComplete }: TrainingProgressProps) 
               ? "Saving model..."
               : progress?.status === "registering"
               ? "Registering with Ollama..."
+              : progress?.status === "error"
+              ? "Error"
               : `Training — Epoch ${progress?.epoch || 0}/${progress?.totalEpochs || 0}`}
           </span>
         </div>
         <button
-          onClick={() => api.stopTraining()}
+          type="button"
+          onClick={handleStop}
           className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-red-400 border border-red-400/30 hover:bg-red-400/10 transition-colors"
         >
           <StopCircle className="h-3.5 w-3.5" />
           Stop
         </button>
       </div>
+
+      {/* Error message */}
+      {progress?.status === "error" && progress.message && (
+        <div className="mb-4 p-3 bg-red-400/10 border border-red-400/30 rounded-lg">
+          <p className="text-sm text-red-400">{progress.message}</p>
+        </div>
+      )}
 
       {/* Overall progress bar */}
       <div className="mb-6">
@@ -164,9 +199,9 @@ export default function TrainingProgress({ onComplete }: TrainingProgressProps) 
         {logs.length === 0 ? (
           <p className="text-xs text-foreground-muted">Waiting for output...</p>
         ) : (
-          logs.map((log, i) => (
-            <p key={i} className="text-xs text-foreground-muted leading-relaxed">
-              {log}
+          logs.map((log) => (
+            <p key={log.id} className="text-xs text-foreground-muted leading-relaxed">
+              {log.text}
             </p>
           ))
         )}

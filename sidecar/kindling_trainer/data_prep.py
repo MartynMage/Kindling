@@ -4,6 +4,9 @@ import os
 import json
 
 
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB per file
+
+
 def read_documents(folder_path: str) -> list[str]:
     """Read all supported documents from a folder."""
     chunks = []
@@ -12,16 +15,27 @@ def read_documents(folder_path: str) -> list[str]:
         fpath = os.path.join(folder_path, fname)
         ext = os.path.splitext(fname)[1].lower()
 
+        # Security: skip symlinks and oversized files
+        if os.path.islink(fpath):
+            continue
+        if not os.path.isfile(fpath):
+            continue
+        if os.path.getsize(fpath) > MAX_FILE_SIZE:
+            continue
+
         if ext in (".txt", ".md"):
-            with open(fpath, "r", encoding="utf-8") as f:
-                content = f.read()
-                # Split into paragraphs
-                paragraphs = [
-                    p.strip()
-                    for p in content.split("\n\n")
-                    if len(p.strip()) > 50
-                ]
-                chunks.extend(paragraphs)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    # Split into paragraphs
+                    paragraphs = [
+                        p.strip()
+                        for p in content.split("\n\n")
+                        if len(p.strip()) > 50
+                    ]
+                    chunks.extend(paragraphs)
+            except (OSError, UnicodeDecodeError):
+                continue
 
     return chunks
 

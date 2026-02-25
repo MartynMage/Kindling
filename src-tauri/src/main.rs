@@ -10,25 +10,39 @@ use std::sync::Mutex;
 pub struct AppState {
     pub db: Mutex<Database>,
     pub ollama_url: Mutex<String>,
+    pub stream_cancelled: Mutex<bool>,
+    pub client: reqwest::Client,
 }
 
 fn main() {
     let database = Database::new().expect("Failed to initialize database");
+
+    // Load saved ollama_url from database, fall back to default
+    let ollama_url = database
+        .get_setting("ollama_url")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             db: Mutex::new(database),
-            ollama_url: Mutex::new("http://localhost:11434".to_string()),
+            ollama_url: Mutex::new(ollama_url),
+            stream_cancelled: Mutex::new(false),
+            client: reqwest::Client::new(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat::send_message,
+            commands::chat::stop_streaming,
             commands::conversations::create_conversation,
             commands::conversations::list_conversations,
             commands::conversations::get_conversation,
             commands::conversations::delete_conversation,
             commands::conversations::rename_conversation,
+            commands::conversations::export_conversation,
+            commands::conversations::search_messages,
             commands::models::list_models,
             commands::models::pull_model,
             commands::models::delete_model,

@@ -39,8 +39,8 @@ pub struct AppSettingsUpdate {
 
 #[tauri::command]
 pub fn get_hardware_info() -> Result<HardwareInfoResponse, String> {
-    let mut sys = System::new_all();
-    sys.refresh_all();
+    let mut sys = System::new();
+    sys.refresh_memory();
 
     let os = format!(
         "{} {}",
@@ -58,8 +58,9 @@ pub fn get_hardware_info() -> Result<HardwareInfoResponse, String> {
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettingsResponse, String> {
-    let db = state.db.lock().map_err(|_| "Internal error: lock failed".to_string())?;
+    // Acquire ollama_url first, clone and release, to maintain consistent lock ordering
     let url = state.ollama_url.lock().map_err(|_| "Internal error: lock failed".to_string())?.clone();
+    let db = state.db.lock().map_err(|_| "Internal error: lock failed".to_string())?;
 
     Ok(AppSettingsResponse {
         ollama_url: db
@@ -105,13 +106,39 @@ pub fn update_settings(
     state: State<'_, AppState>,
     settings: AppSettingsUpdate,
 ) -> Result<(), String> {
+    // Validate inputs
+    if let Some(url) = &settings.ollama_url {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err("Ollama URL must start with http:// or https://".to_string());
+        }
+    }
+    if let Some(temp) = settings.temperature {
+        if !(0.0..=2.0).contains(&temp) {
+            return Err("Temperature must be between 0.0 and 2.0".to_string());
+        }
+    }
+    if let Some(p) = settings.top_p {
+        if !(0.0..=1.0).contains(&p) {
+            return Err("top_p must be between 0.0 and 1.0".to_string());
+        }
+    }
+    if let Some(k) = settings.top_k {
+        if k < 1 || k > 200 {
+            return Err("top_k must be between 1 and 200".to_string());
+        }
+    }
+
+    // Update ollama_url FIRST (outside db lock) to maintain consistent lock ordering
+    if let Some(url) = &settings.ollama_url {
+        let mut ollama_url = state.ollama_url.lock().map_err(|_| "Internal error: lock failed".to_string())?;
+        *ollama_url = url.clone();
+    }
+
     let db = state.db.lock().map_err(|_| "Internal error: lock failed".to_string())?;
 
     if let Some(url) = &settings.ollama_url {
         db.set_setting("ollama_url", url)
             .map_err(|e| e.to_string())?;
-        let mut ollama_url = state.ollama_url.lock().map_err(|_| "Internal error: lock failed".to_string())?;
-        *ollama_url = url.clone();
     }
     if let Some(model) = &settings.default_model {
         db.set_setting("default_model", model)
@@ -144,6 +171,6 @@ pub fn update_settings(
 #[tauri::command]
 pub async fn check_ollama_connection(state: State<'_, AppState>) -> Result<bool, String> {
     let url = state.ollama_url.lock().map_err(|_| "Internal error: lock failed".to_string())?.clone();
-    let client = OllamaClient::new(&url);
+    let client = OllamaClient::new(&url, state.client.clone());
     Ok(client.check_connection().await)
 }

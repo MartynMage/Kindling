@@ -36,7 +36,7 @@ pub async fn list_models(
     state: State<'_, AppState>,
 ) -> Result<Vec<ModelResponse>, String> {
     let url = state.ollama_url.lock().map_err(|_| "Internal error: lock failed".to_string())?.clone();
-    let client = OllamaClient::new(&url);
+    let client = OllamaClient::new(&url, state.client.clone());
     let models = client.list_models().await.map_err(|e| e.to_string())?;
 
     Ok(models
@@ -63,20 +63,27 @@ pub async fn pull_model(
     name: String,
 ) -> Result<(), String> {
     let url = state.ollama_url.lock().map_err(|_| "Internal error: lock failed".to_string())?.clone();
-    let client = OllamaClient::new(&url);
+    let client = OllamaClient::new(&url, state.client.clone());
     let response = client.pull_model(&name).await.map_err(|e| e.to_string())?;
 
     let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
 
     while let Some(chunk_result) = stream.next().await {
         match chunk_result {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
-                for line in text.lines() {
-                    if line.trim().is_empty() {
+                buffer.push_str(&text);
+
+                while let Some(newline_pos) = buffer.find('\n') {
+                    let line = buffer[..newline_pos].to_string();
+                    buffer = buffer[newline_pos + 1..].to_string();
+
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
                         continue;
                     }
-                    if let Ok(progress) = serde_json::from_str::<PullProgress>(line) {
+                    if let Ok(progress) = serde_json::from_str::<PullProgress>(trimmed) {
                         app.emit(
                             "model-pull-progress",
                             ModelPullProgressEvent {
@@ -103,7 +110,7 @@ pub async fn delete_model(
     name: String,
 ) -> Result<(), String> {
     let url = state.ollama_url.lock().map_err(|_| "Internal error: lock failed".to_string())?.clone();
-    let client = OllamaClient::new(&url);
+    let client = OllamaClient::new(&url, state.client.clone());
     client
         .delete_model(&name)
         .await

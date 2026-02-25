@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Plus, Trash2, Edit3, Save, X } from "lucide-react";
 import type { SystemPrompt } from "@/lib/types";
 import * as api from "@/lib/api";
@@ -9,50 +9,58 @@ export default function SystemPrompts() {
   const [editName, setEditName] = useState("");
   const [editContent, setEditContent] = useState("");
   const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadPrompts();
-  }, []);
-
-  async function loadPrompts() {
+  const loadPrompts = useCallback(async (signal?: { cancelled: boolean }) => {
     try {
       const p = await api.listSystemPrompts();
+      if (signal?.cancelled) return;
       setPrompts(p);
     } catch {
       // No prompts yet
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    const signal = { cancelled: false };
+    loadPrompts(signal);
+    return () => { signal.cancelled = true; };
+  }, [loadPrompts]);
 
   const handleCreate = async () => {
     if (!editName.trim() || !editContent.trim()) return;
+    setError(null);
     try {
       await api.createSystemPrompt(editName.trim(), editContent.trim());
       setCreating(false);
       setEditName("");
       setEditContent("");
       loadPrompts();
-    } catch {
-      // Handle error
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create prompt");
     }
   };
 
   const handleUpdate = async (id: string) => {
     if (!editName.trim() || !editContent.trim()) return;
+    setError(null);
     try {
       await api.updateSystemPrompt(id, editName.trim(), editContent.trim());
       setEditing(null);
       loadPrompts();
-    } catch {
-      // Handle error
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update prompt");
     }
   };
 
   const handleDelete = async (id: string) => {
+    if (!confirm("Delete this system prompt?")) return;
+    setError(null);
     try {
       await api.deleteSystemPrompt(id);
       loadPrompts();
-    } catch {
-      // Handle error
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete prompt");
     }
   };
 
@@ -66,16 +74,32 @@ export default function SystemPrompts() {
           </p>
         </div>
         <button
+          type="button"
           onClick={() => {
             setCreating(true);
+            setEditing(null);
             setEditName("");
             setEditContent("");
+            setError(null);
           }}
           className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium text-accent border border-accent/30 hover:bg-accent/10 transition-colors"
         >
           <Plus className="h-3.5 w-3.5" /> New
         </button>
       </div>
+
+      {error && (
+        <div className="flex items-center justify-between bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-4">
+          <p className="text-xs text-red-400">{error}</p>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            className="p-0.5 text-red-400 hover:text-red-300"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Create form */}
       {creating && (
@@ -96,12 +120,14 @@ export default function SystemPrompts() {
           />
           <div className="flex justify-end gap-2 mt-3">
             <button
+              type="button"
               onClick={() => setCreating(false)}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-foreground-muted hover:bg-surface-hover transition-colors"
             >
               <X className="h-3.5 w-3.5" /> Cancel
             </button>
             <button
+              type="button"
               onClick={handleCreate}
               disabled={!editName.trim() || !editContent.trim()}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-white bg-accent hover:bg-accent-dim transition-colors disabled:opacity-40"
@@ -143,14 +169,17 @@ export default function SystemPrompts() {
                 />
                 <div className="flex justify-end gap-2 mt-3">
                   <button
+                    type="button"
                     onClick={() => setEditing(null)}
                     className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-foreground-muted hover:bg-surface-hover transition-colors"
                   >
                     <X className="h-3.5 w-3.5" /> Cancel
                   </button>
                   <button
+                    type="button"
                     onClick={() => handleUpdate(prompt.id)}
-                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-white bg-accent hover:bg-accent-dim transition-colors"
+                    disabled={!editName.trim() || !editContent.trim()}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-white bg-accent hover:bg-accent-dim transition-colors disabled:opacity-40"
                   >
                     <Save className="h-3.5 w-3.5" /> Save
                   </button>
@@ -168,16 +197,20 @@ export default function SystemPrompts() {
                 </div>
                 <div className="flex gap-1 shrink-0">
                   <button
+                    type="button"
                     onClick={() => {
                       setEditing(prompt.id);
+                      setCreating(false);
                       setEditName(prompt.name);
                       setEditContent(prompt.content);
+                      setError(null);
                     }}
                     className="p-1.5 rounded text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-colors"
                   >
                     <Edit3 className="h-3.5 w-3.5" />
                   </button>
                   <button
+                    type="button"
                     onClick={() => handleDelete(prompt.id)}
                     className="p-1.5 rounded text-foreground-muted hover:text-red-400 hover:bg-surface-hover transition-colors"
                   >

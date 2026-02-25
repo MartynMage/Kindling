@@ -19,7 +19,7 @@ def main():
 
     try:
         data = json.loads(raw)
-        config = TrainingConfig(**data)
+        config = TrainingConfig.from_json(data)
     except (json.JSONDecodeError, TypeError) as e:
         emit(status="error", message=f"Invalid config: {e}")
         sys.exit(1)

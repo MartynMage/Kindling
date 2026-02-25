@@ -25,6 +25,7 @@ export default function FileUpload({ path, onPathChange }: FileUploadProps) {
   return (
     <div>
       <button
+        type="button"
         onClick={handleBrowse}
         className="w-full flex flex-col items-center justify-center gap-3 p-8 border-2 border-dashed border-surface-border rounded-xl hover:border-accent/40 hover:bg-accent/5 transition-colors cursor-pointer"
       >
@@ -34,7 +35,7 @@ export default function FileUpload({ path, onPathChange }: FileUploadProps) {
             {path ? "Change folder" : "Select a folder"}
           </p>
           <p className="text-xs text-foreground-muted mt-1">
-            Supports .txt, .md, and .pdf files
+            Supports .txt and .md files
           </p>
         </div>
       </button>

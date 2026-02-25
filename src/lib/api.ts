@@ -11,6 +11,8 @@ import type {
   ModelPullProgress,
   TrainingConfig,
   TrainingProgress,
+  ExportResult,
+  SearchResult,
 } from "./types";
 
 // --- Chat ---
@@ -27,6 +29,10 @@ export async function sendMessage(
     model,
     systemPrompt,
   });
+}
+
+export async function stopStreaming() {
+  return invoke<void>("stop_streaming");
 }
 
 export function onChatStream(callback: (event: ChatStreamEvent) => void) {
@@ -56,6 +62,14 @@ export async function deleteConversation(id: string) {
 
 export async function renameConversation(id: string, title: string) {
   return invoke<void>("rename_conversation", { id, title });
+}
+
+export async function exportConversation(id: string, format: "markdown" | "json") {
+  return invoke<ExportResult>("export_conversation", { id, format });
+}
+
+export async function searchMessages(query: string) {
+  return invoke<SearchResult[]>("search_messages", { query });
 }
 
 // --- Models ---

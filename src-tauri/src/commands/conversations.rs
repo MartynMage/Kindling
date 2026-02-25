@@ -111,3 +111,90 @@ pub fn rename_conversation(
     db.rename_conversation(&id, &title)
         .map_err(|e| e.to_string())
 }
+
+#[derive(Debug, Serialize)]
+pub struct ExportResult {
+    pub content: String,
+    pub filename: String,
+}
+
+#[tauri::command]
+pub fn export_conversation(
+    state: State<'_, AppState>,
+    id: String,
+    format: String,
+) -> Result<ExportResult, String> {
+    let db = state.db.lock().map_err(|_| "Internal error: database lock".to_string())?;
+    let convo = db
+        .get_conversation(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Conversation not found")?;
+    let messages = db.get_messages(&id).map_err(|e| e.to_string())?;
+
+    let safe_title: String = convo.title.chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+        .collect::<String>()
+        .trim()
+        .replace(' ', "-");
+    let title_slug = if safe_title.is_empty() { "conversation".to_string() } else { safe_title };
+
+    match format.as_str() {
+        "json" => {
+            let export = serde_json::json!({
+                "title": convo.title,
+                "model": convo.model,
+                "createdAt": convo.created_at,
+                "messages": messages.iter().map(|m| serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                    "model": m.model,
+                    "createdAt": m.created_at,
+                })).collect::<Vec<_>>()
+            });
+            Ok(ExportResult {
+                content: serde_json::to_string_pretty(&export).map_err(|e| e.to_string())?,
+                filename: format!("{}.json", title_slug),
+            })
+        }
+        _ => {
+            // Markdown format
+            let mut md = format!("# {}\n\n", convo.title);
+            md.push_str(&format!("**Model:** {}  \n", convo.model));
+            md.push_str(&format!("**Date:** {}  \n\n---\n\n", convo.created_at));
+
+            for msg in &messages {
+                let role_label = match msg.role.as_str() {
+                    "user" => "**You**",
+                    "assistant" => "**Assistant**",
+                    "system" => "**System**",
+                    _ => &msg.role,
+                };
+                md.push_str(&format!("{}\n\n{}\n\n---\n\n", role_label, msg.content));
+            }
+            Ok(ExportResult {
+                content: md,
+                filename: format!("{}.md", title_slug),
+            })
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub conversation_id: String,
+    pub conversation_title: String,
+    pub message_id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub fn search_messages(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<SearchResult>, String> {
+    let db = state.db.lock().map_err(|_| "Internal error: database lock".to_string())?;
+    db.search_messages(&query).map_err(|e| e.to_string())
+}

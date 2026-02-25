@@ -23,6 +23,9 @@ def emit(**kwargs):
     print(json.dumps(defaults), flush=True)
 
 
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB per file
+
+
 def run_training(config: TrainingConfig):
     emit(status="preparing", message="Loading dependencies...")
 
@@ -49,29 +52,37 @@ def run_training(config: TrainingConfig):
         + (f" ({torch.cuda.get_device_name(0)})" if device == "cuda" else ""),
     )
 
+    # Validate data path
+    data_path = os.path.realpath(config.data_path)
+    home = os.path.expanduser("~")
+    if not data_path.startswith(home):
+        emit(status="error", message="Data path must be within your home directory")
+        return
+
     # Load training data
     emit(status="preparing", message="Loading training data...")
-    data_path = config.data_path
     training_data = []
 
-    if os.path.isdir(data_path):
-        # Read JSONL files from directory
-        for fname in os.listdir(data_path):
-            fpath = os.path.join(data_path, fname)
-            if fname.endswith(".jsonl"):
-                with open(fpath, "r", encoding="utf-8") as f:
-                    for line in f:
-                        try:
-                            training_data.append(json.loads(line.strip()))
-                        except json.JSONDecodeError:
-                            continue
-    elif os.path.isfile(data_path) and data_path.endswith(".jsonl"):
-        with open(data_path, "r", encoding="utf-8") as f:
+    def _read_jsonl(fpath):
+        """Read JSONL file with size limit."""
+        if os.path.islink(fpath):
+            return  # skip symlinks for security
+        if os.path.getsize(fpath) > MAX_FILE_SIZE:
+            return  # skip files larger than 50MB
+        with open(fpath, "r", encoding="utf-8") as f:
             for line in f:
                 try:
                     training_data.append(json.loads(line.strip()))
                 except json.JSONDecodeError:
                     continue
+
+    if os.path.isdir(data_path):
+        for fname in os.listdir(data_path):
+            fpath = os.path.join(data_path, fname)
+            if fname.endswith(".jsonl") and os.path.isfile(fpath):
+                _read_jsonl(fpath)
+    elif os.path.isfile(data_path) and data_path.endswith(".jsonl"):
+        _read_jsonl(data_path)
 
     if not training_data:
         emit(status="error", message="No training data found")
@@ -119,10 +130,11 @@ def run_training(config: TrainingConfig):
     model = get_peft_model(model, lora_config)
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
+    pct = (100 * trainable_params / total_params) if total_params > 0 else 0
     emit(
         status="preparing",
         message=f"Trainable parameters: {trainable_params:,} / {total_params:,} "
-        f"({100 * trainable_params / total_params:.2f}%)",
+        f"({pct:.2f}%)",
     )
 
     # Prepare dataset
@@ -140,7 +152,8 @@ def run_training(config: TrainingConfig):
     dataset = Dataset.from_list(training_data)
     tokenized_dataset = dataset.map(format_example, remove_columns=dataset.column_names)
 
-    total_steps = (len(tokenized_dataset) // config.batch_size) * config.epochs
+    batch_size = max(1, config.batch_size)
+    total_steps = max(1, (len(tokenized_dataset) // batch_size) * config.epochs)
 
     # Training arguments
     output_dir = os.path.join(

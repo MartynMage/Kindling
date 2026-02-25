@@ -59,11 +59,29 @@ export default function Sidebar({
         <button
           type="button"
           onClick={onToggle}
-          className="p-2 rounded-lg text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-colors"
+          className="p-2 rounded-lg text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-colors mb-2"
           title="Open sidebar (Ctrl+B)"
         >
           <PanelLeft className="h-5 w-5" />
         </button>
+        <div className="flex-1" />
+        <nav aria-label="Main navigation" className="space-y-1">
+          {navItems.map(({ view: v, icon: Icon, label }) => (
+            <button
+              type="button"
+              key={v}
+              onClick={() => onChangeView(v)}
+              title={label}
+              className={`p-2 rounded-lg transition-colors ${
+                view === v
+                  ? "bg-surface-hover text-foreground"
+                  : "text-foreground-muted hover:text-foreground hover:bg-surface-hover"
+              }`}
+            >
+              <Icon className="h-4 w-4" />
+            </button>
+          ))}
+        </nav>
       </div>
     );
   }
@@ -124,6 +142,7 @@ export default function Sidebar({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search chats..."
+              aria-label="Search conversations"
               className="flex-1 bg-transparent text-xs text-foreground placeholder:text-foreground-muted outline-none"
             />
           </div>
@@ -143,12 +162,15 @@ export default function Sidebar({
       </div>
 
       {/* Nav */}
-      <div className="border-t border-surface-border px-2 py-2 space-y-0.5">
+      <nav aria-label="Main navigation" className="border-t border-surface-border px-2 py-2 space-y-0.5">
         {navItems.map(({ view: v, icon: Icon, label }) => (
           <button
             type="button"
             key={v}
-            onClick={() => onChangeView(v)}
+            onClick={() => {
+              onChangeView(v);
+              setSearchQuery("");
+            }}
             className={`flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm transition-colors ${
               view === v
                 ? "bg-surface-hover text-foreground"
@@ -159,7 +181,7 @@ export default function Sidebar({
             {label}
           </button>
         ))}
-      </div>
+      </nav>
     </div>
   );
 }

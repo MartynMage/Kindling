@@ -31,6 +31,20 @@ pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
     pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<ChatOptions>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_ctx: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -70,9 +84,9 @@ pub struct OllamaClient {
 }
 
 impl OllamaClient {
-    pub fn new(base_url: &str) -> Self {
+    pub fn new(base_url: &str, client: Client) -> Self {
         OllamaClient {
-            client: Client::new(),
+            client,
             base_url: base_url.to_string(),
         }
     }
@@ -83,7 +97,8 @@ impl OllamaClient {
             .timeout(std::time::Duration::from_secs(3))
             .send()
             .await
-            .is_ok()
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
     }
 
     pub async fn list_models(&self) -> Result<Vec<OllamaModel>, reqwest::Error> {
@@ -101,17 +116,22 @@ impl OllamaClient {
         &self,
         model: &str,
         messages: Vec<ChatMessage>,
+        options: Option<ChatOptions>,
     ) -> Result<reqwest::Response, reqwest::Error> {
         let req = ChatRequest {
             model: model.to_string(),
             messages,
             stream: true,
+            options,
         };
-        self.client
+        let resp = self
+            .client
             .post(format!("{}/api/chat", self.base_url))
             .json(&req)
             .send()
-            .await
+            .await?
+            .error_for_status()?;
+        Ok(resp)
     }
 
     pub async fn pull_model(
@@ -137,7 +157,8 @@ impl OllamaClient {
             .delete(format!("{}/api/delete", self.base_url))
             .json(&req)
             .send()
-            .await?;
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 }

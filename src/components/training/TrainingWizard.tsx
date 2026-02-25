@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Flame, ArrowRight, ArrowLeft, Upload, Play, Check } from "lucide-react";
+import { Flame, ArrowRight, ArrowLeft, Upload, Play, Check, AlertTriangle } from "lucide-react";
 import FileUpload from "./FileUpload";
 import TrainingConfig from "./TrainingConfig";
 import TrainingProgress from "./TrainingProgress";
@@ -40,18 +40,21 @@ export default function TrainingWizard({ models, onComplete }: TrainingWizardPro
     batchSize: 4,
   });
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isStartingTraining, setIsStartingTraining] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const stepIndex = STEPS.findIndex((s) => s.key === step);
 
   const handleGenerateData = async () => {
     if (!documentsPath || !selectedModel) return;
     setIsGenerating(true);
+    setError(null);
     try {
       const result = await api.generateTrainingData(documentsPath, selectedModel);
       setTrainingPairs(result.pairs);
       setStep("preview");
     } catch (err) {
-      console.error("Failed to generate training data:", err);
+      setError(err instanceof Error ? err.message : "Failed to generate training data");
     } finally {
       setIsGenerating(false);
     }
@@ -64,11 +67,15 @@ export default function TrainingWizard({ models, onComplete }: TrainingWizardPro
       dataPath: documentsPath,
       outputName: config.outputName || `${selectedModel.split(":")[0]}-finetuned`,
     };
-    setStep("training");
+    setIsStartingTraining(true);
+    setError(null);
     try {
       await api.startTraining(trainingConfig);
+      setStep("training");
     } catch (err) {
-      console.error("Failed to start training:", err);
+      setError(err instanceof Error ? err.message : "Failed to start training");
+    } finally {
+      setIsStartingTraining(false);
     }
   };
 
@@ -110,38 +117,63 @@ export default function TrainingWizard({ models, onComplete }: TrainingWizardPro
           ))}
         </div>
 
+        {/* Error banner */}
+        {error && (
+          <div className="flex items-center gap-2 mb-4 p-3 bg-red-400/10 border border-red-400/30 rounded-lg">
+            <AlertTriangle className="h-4 w-4 text-red-400 shrink-0" />
+            <p className="text-sm text-red-400 flex-1">{error}</p>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="text-xs text-red-400/60 hover:text-red-400"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {/* Step content */}
         {step === "model" && (
           <div>
             <h2 className="text-sm font-medium text-foreground mb-3">
               Select a base model to fine-tune
             </h2>
-            <div className="space-y-2">
-              {models.map((m) => (
-                <button
-                  key={m.name}
-                  onClick={() => setSelectedModel(m.name)}
-                  className={`flex items-center justify-between w-full px-4 py-3 rounded-lg border transition-colors ${
-                    selectedModel === m.name
-                      ? "border-accent bg-accent/10 text-foreground"
-                      : "border-surface-border bg-surface text-foreground hover:border-foreground-muted/30"
-                  }`}
-                >
-                  <div className="text-left">
-                    <p className="text-sm font-medium">{m.name}</p>
-                    <p className="text-xs text-foreground-muted">
-                      {m.details.parameterSize} &middot;{" "}
-                      {m.details.quantizationLevel}
-                    </p>
-                  </div>
-                  {selectedModel === m.name && (
-                    <Check className="h-4 w-4 text-accent" />
-                  )}
-                </button>
-              ))}
-            </div>
+            {models.length === 0 ? (
+              <div className="bg-surface border border-surface-border rounded-lg p-8 text-center">
+                <p className="text-sm text-foreground-secondary">
+                  No models installed. Install a model from the Models tab first.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {models.map((m) => (
+                  <button
+                    type="button"
+                    key={m.name}
+                    onClick={() => setSelectedModel(m.name)}
+                    className={`flex items-center justify-between w-full px-4 py-3 rounded-lg border transition-colors ${
+                      selectedModel === m.name
+                        ? "border-accent bg-accent/10 text-foreground"
+                        : "border-surface-border bg-surface text-foreground hover:border-foreground-muted/30"
+                    }`}
+                  >
+                    <div className="text-left">
+                      <p className="text-sm font-medium">{m.name}</p>
+                      <p className="text-xs text-foreground-muted">
+                        {m.details.parameterSize} &middot;{" "}
+                        {m.details.quantizationLevel}
+                      </p>
+                    </div>
+                    {selectedModel === m.name && (
+                      <Check className="h-4 w-4 text-accent" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex justify-end mt-6">
               <button
+                type="button"
                 onClick={() => setStep("data")}
                 disabled={!selectedModel}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim transition-colors disabled:opacity-40"
@@ -163,12 +195,14 @@ export default function TrainingWizard({ models, onComplete }: TrainingWizardPro
             />
             <div className="flex justify-between mt-6">
               <button
+                type="button"
                 onClick={() => setStep("model")}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg border border-surface-border text-foreground-secondary text-sm hover:bg-surface-hover transition-colors"
               >
                 <ArrowLeft className="h-4 w-4" /> Back
               </button>
               <button
+                type="button"
                 onClick={handleGenerateData}
                 disabled={!documentsPath || isGenerating}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim transition-colors disabled:opacity-40"
@@ -193,7 +227,7 @@ export default function TrainingWizard({ models, onComplete }: TrainingWizardPro
             <div className="space-y-3 max-h-[400px] overflow-y-auto">
               {trainingPairs.map((pair, i) => (
                 <div
-                  key={i}
+                  key={`${i}-${pair.instruction.slice(0, 32)}`}
                   className="bg-surface border border-surface-border rounded-lg p-4"
                 >
                   <p className="text-xs text-accent font-medium mb-1">
@@ -213,14 +247,17 @@ export default function TrainingWizard({ models, onComplete }: TrainingWizardPro
             </div>
             <div className="flex justify-between mt-6">
               <button
+                type="button"
                 onClick={() => setStep("data")}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg border border-surface-border text-foreground-secondary text-sm hover:bg-surface-hover transition-colors"
               >
                 <ArrowLeft className="h-4 w-4" /> Back
               </button>
               <button
+                type="button"
                 onClick={() => setStep("config")}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim transition-colors"
+                disabled={trainingPairs.length === 0}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim transition-colors disabled:opacity-40"
               >
                 Next <ArrowRight className="h-4 w-4" />
               </button>
@@ -236,16 +273,19 @@ export default function TrainingWizard({ models, onComplete }: TrainingWizardPro
             <TrainingConfig config={config} onChange={setConfig} />
             <div className="flex justify-between mt-6">
               <button
+                type="button"
                 onClick={() => setStep("preview")}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg border border-surface-border text-foreground-secondary text-sm hover:bg-surface-hover transition-colors"
               >
                 <ArrowLeft className="h-4 w-4" /> Back
               </button>
               <button
+                type="button"
                 onClick={handleStartTraining}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim transition-colors"
+                disabled={isStartingTraining}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim transition-colors disabled:opacity-40"
               >
-                <Play className="h-4 w-4" /> Start Training
+                <Play className="h-4 w-4" /> {isStartingTraining ? "Starting..." : "Start Training"}
               </button>
             </div>
           </div>
@@ -269,6 +309,7 @@ export default function TrainingWizard({ models, onComplete }: TrainingWizardPro
               Your fine-tuned model is ready to use
             </p>
             <button
+              type="button"
               onClick={onComplete}
               className="px-6 py-2.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim transition-colors"
             >

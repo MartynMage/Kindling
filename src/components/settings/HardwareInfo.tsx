@@ -1,32 +1,32 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Cpu, MemoryStick, Monitor, RefreshCw } from "lucide-react";
 import type { HardwareInfo as HWInfo } from "@/lib/types";
+import { formatSize } from "@/lib/utils";
 import * as api from "@/lib/api";
-
-function formatBytes(bytes: number): string {
-  const gb = bytes / (1024 * 1024 * 1024);
-  return `${gb.toFixed(1)} GB`;
-}
 
 export default function HardwareInfo() {
   const [info, setInfo] = useState<HWInfo | null>(null);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
+  const load = useCallback(async (signal?: { cancelled: boolean }) => {
     setLoading(true);
     try {
       const hw = await api.getHardwareInfo();
+      if (signal?.cancelled) return;
       setInfo(hw);
     } catch {
+      if (signal?.cancelled) return;
       setInfo(null);
     } finally {
-      setLoading(false);
+      if (!signal?.cancelled) setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
-    load();
-  }, []);
+    const signal = { cancelled: false };
+    load(signal);
+    return () => { signal.cancelled = true; };
+  }, [load]);
 
   const getRecommendation = (ram: number, vram?: number): string => {
     const availableMemory = vram || ram;
@@ -56,7 +56,8 @@ export default function HardwareInfo() {
           </p>
         </div>
         <button
-          onClick={load}
+          type="button"
+          onClick={() => load()}
           className="p-1.5 rounded-lg text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-colors"
         >
           <RefreshCw className="h-4 w-4" />
@@ -80,7 +81,7 @@ export default function HardwareInfo() {
                 <span className="text-xs text-foreground-muted">RAM</span>
               </div>
               <p className="text-sm font-medium text-foreground">
-                {formatBytes(info.totalRam)}
+                {formatSize(info.totalRam)}
               </p>
             </div>
 
@@ -94,7 +95,7 @@ export default function HardwareInfo() {
               </p>
               {info.vram && (
                 <p className="text-xs text-foreground-muted mt-0.5">
-                  {formatBytes(info.vram)} VRAM
+                  {formatSize(info.vram)} VRAM
                 </p>
               )}
             </div>

@@ -36,8 +36,16 @@ pub struct Database {
 
 impl Database {
     pub fn new() -> Result<Self> {
-        let app_dir = dirs_next().unwrap_or_else(|| std::path::PathBuf::from("."));
-        std::fs::create_dir_all(&app_dir).ok();
+        let app_dir = dirs_next().ok_or_else(|| {
+            rusqlite::Error::InvalidParameterName(
+                "Could not determine application data directory".to_string(),
+            )
+        })?;
+        std::fs::create_dir_all(&app_dir).map_err(|e| {
+            rusqlite::Error::InvalidParameterName(
+                format!("Failed to create data directory {:?}: {}", app_dir, e),
+            )
+        })?;
         let db_path = app_dir.join("kindling.db");
         let conn = Connection::open(db_path)?;
         let db = Database { conn };
@@ -46,6 +54,7 @@ impl Database {
     }
 
     fn run_migrations(&self) -> Result<()> {
+        self.conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
@@ -205,6 +214,29 @@ impl Database {
                 role: row.get(2)?,
                 content: row.get(3)?,
                 model: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn search_messages(&self, query: &str) -> Result<Vec<crate::commands::conversations::SearchResult>> {
+        let search_pattern = format!("%{}%", query);
+        let mut stmt = self.conn.prepare(
+            "SELECT m.conversation_id, c.title, m.id, m.role, m.content, m.created_at
+             FROM messages m
+             JOIN conversations c ON m.conversation_id = c.id
+             WHERE m.content LIKE ?1
+             ORDER BY m.created_at DESC
+             LIMIT 50",
+        )?;
+        let rows = stmt.query_map(params![search_pattern], |row| {
+            Ok(crate::commands::conversations::SearchResult {
+                conversation_id: row.get(0)?,
+                conversation_title: row.get(1)?,
+                message_id: row.get(2)?,
+                role: row.get(3)?,
+                content: row.get(4)?,
                 created_at: row.get(5)?,
             })
         })?;

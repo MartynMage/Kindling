@@ -37,6 +37,7 @@ export interface SystemPrompt {
 }
 
 export interface ChatStreamEvent {
+  conversationId: string;
   token?: string;
   done: boolean;
   error?: string;
@@ -86,6 +87,20 @@ export interface AppSettings {
   topP: number;
   topK: number;
   theme: "dark" | "light" | "system";
+}
+
+export interface ExportResult {
+  content: string;
+  filename: string;
+}
+
+export interface SearchResult {
+  conversationId: string;
+  conversationTitle: string;
+  messageId: string;
+  role: string;
+  content: string;
+  createdAt: string;
 }
 
 export type View = "chat" | "models" | "training" | "settings";

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Trash2, MessageSquare, Pencil, Check, X } from "lucide-react";
+import { Trash2, MessageSquare, Pencil, Check, X, Download } from "lucide-react";
 import type { Conversation } from "@/lib/types";
 import * as api from "@/lib/api";
 
@@ -22,6 +22,7 @@ export default function ConversationList({
 }: ConversationListProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   const filtered = searchQuery.trim()
     ? conversations.filter((c) =>
@@ -35,13 +36,32 @@ export default function ConversationList({
       setRenamingId(null);
       return;
     }
+    setRenameError(null);
     try {
       await api.renameConversation(id, trimmed);
       onRenamed();
+      setRenamingId(null);
     } catch {
-      // Failed to rename
+      setRenameError(id);
     }
-    setRenamingId(null);
+  };
+
+  const handleExport = async (id: string) => {
+    try {
+      const result = await api.exportConversation(id, "markdown");
+      // Create a download via a Blob + link click
+      const blob = new Blob([result.content], { type: "text/markdown" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = result.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      // Export failed silently
+    }
   };
 
   if (conversations.length === 0) {
@@ -66,8 +86,17 @@ export default function ConversationList({
       {filtered.map((convo) => (
         <div
           key={convo.id}
+          role="button"
+          tabIndex={renamingId === convo.id ? -1 : 0}
           onClick={() => renamingId !== convo.id && onSelect(convo.id)}
-          className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
+          onKeyDown={(e) => {
+            if (renamingId === convo.id) return;
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onSelect(convo.id);
+            }
+          }}
+          className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ${
             activeId === convo.id
               ? "bg-surface-hover text-foreground"
               : "text-foreground-secondary hover:bg-surface-hover hover:text-foreground"
@@ -75,35 +104,50 @@ export default function ConversationList({
         >
           {renamingId === convo.id ? (
             <form
-              className="flex-1 flex items-center gap-1"
+              className="flex-1 flex flex-col gap-1"
               onSubmit={(e) => {
                 e.preventDefault();
                 handleRename(convo.id);
               }}
             >
-              <input
-                autoFocus
-                type="text"
-                value={renameValue}
-                onChange={(e) => setRenameValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") setRenamingId(null);
-                }}
-                className="flex-1 text-sm bg-surface-hover border border-surface-border rounded px-1.5 py-0.5 text-foreground outline-none focus:border-accent/40"
-              />
-              <button
-                type="submit"
-                className="p-0.5 text-accent hover:text-accent-dim"
-              >
-                <Check className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setRenamingId(null)}
-                className="p-0.5 text-foreground-muted hover:text-foreground"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
+              <div className="flex items-center gap-1">
+                <input
+                  autoFocus
+                  type="text"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      setRenamingId(null);
+                      setRenameError(null);
+                    }
+                  }}
+                  className={`flex-1 text-sm bg-surface-hover border rounded px-1.5 py-0.5 text-foreground outline-none ${
+                    renameError === convo.id
+                      ? "border-red-400/60"
+                      : "border-surface-border focus:border-accent/40"
+                  }`}
+                />
+                <button
+                  type="submit"
+                  className="p-0.5 text-accent hover:text-accent-dim"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRenamingId(null);
+                    setRenameError(null);
+                  }}
+                  className="p-0.5 text-foreground-muted hover:text-foreground"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {renameError === convo.id && (
+                <span className="text-xs text-red-400 pl-0.5">Rename failed</span>
+              )}
             </form>
           ) : (
             <>
@@ -118,6 +162,7 @@ export default function ConversationList({
                     e.stopPropagation();
                     setRenamingId(convo.id);
                     setRenameValue(convo.title);
+                    setRenameError(null);
                   }}
                   className="p-1 rounded text-foreground-muted hover:text-foreground transition-colors"
                 >
@@ -125,10 +170,23 @@ export default function ConversationList({
                 </button>
                 <button
                   type="button"
+                  aria-label="Export conversation"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleExport(convo.id);
+                  }}
+                  className="p-1 rounded text-foreground-muted hover:text-foreground transition-colors"
+                >
+                  <Download className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
                   aria-label="Delete conversation"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onDelete(convo.id);
+                    if (confirm("Delete this conversation?")) {
+                      onDelete(convo.id);
+                    }
                   }}
                   className="p-1 rounded text-foreground-muted hover:text-red-400 transition-colors"
                 >

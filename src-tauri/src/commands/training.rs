@@ -160,9 +160,16 @@ pub async fn start_training(
 }
 
 #[tauri::command]
-pub async fn stop_training() -> Result<(), String> {
-    // In a full implementation, this would signal the sidecar process to stop
-    // via a cancellation token or by killing the process
+pub async fn stop_training(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Signal the training to stop via the stream_cancelled flag
+    // The training loop checks this flag and will terminate
+    let mut cancelled = state
+        .stream_cancelled
+        .lock()
+        .map_err(|_| "Internal error: failed to acquire lock".to_string())?;
+    *cancelled = true;
     Ok(())
 }
 
@@ -183,7 +190,8 @@ pub async fn generate_training_data(
     }
 
     // Only allow paths from user-accessible directories
-    let home_dir = dirs::home_dir().unwrap_or_default();
+    let home_dir = dirs::home_dir()
+        .ok_or("Could not determine home directory".to_string())?;
     if !canonical_path.starts_with(&home_dir) {
         return Err("Documents must be within your home directory".to_string());
     }

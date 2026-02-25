@@ -6,15 +6,15 @@ export default {
     extend: {
       colors: {
         surface: {
-          DEFAULT: "#1a1a2e",
-          hover: "#222240",
-          border: "#2a2a4a",
+          DEFAULT: "var(--color-surface)",
+          hover: "var(--color-surface-hover)",
+          border: "var(--color-surface-border)",
         },
-        background: "#0f0f1a",
+        background: "var(--color-background)",
         foreground: {
-          DEFAULT: "#e4e4f0",
-          secondary: "#9494b8",
-          muted: "#6b6b8a",
+          DEFAULT: "var(--color-foreground)",
+          secondary: "var(--color-foreground-secondary)",
+          muted: "var(--color-foreground-muted)",
         },
         accent: {
           DEFAULT: "#f97316",

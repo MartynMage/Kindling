@@ -1,11 +1,13 @@
-use crate::ollama::{ChatMessage, OllamaClient, ChatStreamChunk};
+use crate::ollama::{ChatMessage, ChatOptions, OllamaClient, ChatStreamChunk};
 use crate::AppState;
 use futures_util::StreamExt;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 #[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatStreamEvent {
+    pub conversation_id: String,
     pub token: Option<String>,
     pub done: bool,
     pub error: Option<String>,
@@ -20,6 +22,15 @@ pub async fn send_message(
     model: String,
     system_prompt: Option<String>,
 ) -> Result<(), String> {
+    // Reset cancellation flag at the start of a new message
+    {
+        let mut cancelled = state
+            .stream_cancelled
+            .lock()
+            .map_err(|_| "Internal error: failed to acquire lock".to_string())?;
+        *cancelled = false;
+    }
+
     let ollama_url = state
         .ollama_url
         .lock()
@@ -36,8 +47,8 @@ pub async fn send_message(
             .map_err(|e| e.to_string())?;
     }
 
-    // Build message history
-    let messages = {
+    // Build message history and load settings
+    let (messages, chat_options) = {
         let db = state
             .db
             .lock()
@@ -62,13 +73,21 @@ pub async fn send_message(
             });
         }
 
-        chat_messages
+        // Load model parameters from settings
+        let options = ChatOptions {
+            temperature: db.get_setting("temperature").ok().flatten().and_then(|v| v.parse().ok()),
+            top_p: db.get_setting("top_p").ok().flatten().and_then(|v| v.parse().ok()),
+            top_k: db.get_setting("top_k").ok().flatten().and_then(|v| v.parse().ok()),
+            num_ctx: db.get_setting("context_length").ok().flatten().and_then(|v| v.parse().ok()),
+        };
+
+        (chat_messages, options)
     };
 
     // Stream response from Ollama
-    let client = OllamaClient::new(&ollama_url);
+    let client = OllamaClient::new(&ollama_url, state.client.clone());
     let response = client
-        .chat_stream(&model, messages)
+        .chat_stream(&model, messages, Some(chat_options))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -77,6 +96,37 @@ pub async fn send_message(
     let mut buffer = String::new();
 
     while let Some(chunk_result) = stream.next().await {
+        // Check cancellation flag
+        {
+            let cancelled = state.stream_cancelled.lock().unwrap_or_else(|e| e.into_inner());
+            if *cancelled {
+                // Save whatever we have so far
+                if !full_response.trim().is_empty() {
+                    let db = state.db.lock().map_err(|_| {
+                        "Internal error: failed to acquire database lock".to_string()
+                    })?;
+                    db.add_message(
+                        &conversation_id,
+                        "assistant",
+                        &full_response,
+                        Some(&model),
+                    )
+                    .map_err(|e| format!("Failed to save message: {}", e))?;
+                }
+                app.emit(
+                    "chat-stream",
+                    ChatStreamEvent {
+                        conversation_id: conversation_id.clone(),
+                        token: None,
+                        done: true,
+                        error: None,
+                    },
+                )
+                .ok();
+                return Ok(());
+            }
+        }
+
         match chunk_result {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
@@ -97,6 +147,7 @@ pub async fn send_message(
                             app.emit(
                                 "chat-stream",
                                 ChatStreamEvent {
+                                    conversation_id: conversation_id.clone(),
                                     token: Some(msg.content.clone()),
                                     done: false,
                                     error: None,
@@ -137,6 +188,7 @@ pub async fn send_message(
                             app.emit(
                                 "chat-stream",
                                 ChatStreamEvent {
+                                    conversation_id: conversation_id.clone(),
                                     token: None,
                                     done: true,
                                     error: None,
@@ -151,6 +203,7 @@ pub async fn send_message(
                 app.emit(
                     "chat-stream",
                     ChatStreamEvent {
+                        conversation_id: conversation_id.clone(),
                         token: None,
                         done: true,
                         error: Some(e.to_string()),
@@ -170,6 +223,7 @@ pub async fn send_message(
                 app.emit(
                     "chat-stream",
                     ChatStreamEvent {
+                        conversation_id: conversation_id.clone(),
                         token: Some(msg.content.clone()),
                         done: false,
                         error: None,
@@ -180,6 +234,18 @@ pub async fn send_message(
         }
     }
 
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn stop_streaming(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut cancelled = state
+        .stream_cancelled
+        .lock()
+        .map_err(|_| "Internal error: failed to acquire lock".to_string())?;
+    *cancelled = true;
     Ok(())
 }
 
