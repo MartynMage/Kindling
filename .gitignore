@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build
+dist/
+dist-ssr/
+
+# Tauri
+src-tauri/target/
+
+# Machine-specific cargo config (MSVC paths, SDK paths)
+src-tauri/.cargo/config.toml
+
+# Python sidecar
+sidecar/__pycache__/
+sidecar/*.egg-info/
+sidecar/dist/
+sidecar/build/
+sidecar/venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
