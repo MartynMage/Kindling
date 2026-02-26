@@ -132,13 +132,18 @@ export default function App() {
         const connected = await api.checkOllamaConnection();
         setOllamaConnected(connected);
         if (connected) {
-          const [, modelList] = await Promise.all([
-            loadConversations(),
+          const [convos, modelList] = await Promise.all([
+            api.listConversations().catch(() => [] as Conversation[]),
             api.listModels(),
           ]);
+          setConversations(convos);
           setModels(modelList);
           if (modelList.length > 0 && !selectedModelRef.current) {
             setSelectedModel(modelList[0].name);
+          }
+          // Auto-select the most recent conversation so history appears on startup
+          if (convos.length > 0) {
+            setActiveConversationId(convos[0].id);
           }
           // Show onboarding if no conversations and no models
           if (modelList.length === 0) {

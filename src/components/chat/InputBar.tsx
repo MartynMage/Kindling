@@ -74,7 +74,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(function InputBar({ o
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-end gap-2 bg-surface border border-surface-border rounded-2xl px-4 py-3">
+      <div className="flex items-end gap-2 bg-surface border border-surface-border rounded-2xl px-3 py-2">
         <textarea
           ref={textareaRef}
           value={value}

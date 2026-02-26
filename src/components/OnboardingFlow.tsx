@@ -1,9 +1,11 @@
-import { Flame, Download, ArrowRight, CheckCircle, ExternalLink } from "lucide-react";
+import { useState } from "react";
+import { Flame, Download, ArrowRight, CheckCircle, ExternalLink, RefreshCw } from "lucide-react";
+import { open as shellOpen } from "@tauri-apps/plugin-shell";
 
 interface OnboardingFlowProps {
   ollamaConnected: boolean;
   hasModels: boolean;
-  onRetryConnection: () => void;
+  onRetryConnection: () => Promise<void> | void;
   onGoToModels: () => void;
   onDismiss: () => void;
 }
@@ -15,27 +17,57 @@ export default function OnboardingFlow({
   onGoToModels,
   onDismiss,
 }: OnboardingFlowProps) {
+  const [checking, setChecking] = useState(false);
+  const [checkFailed, setCheckFailed] = useState(false);
+
+  const handleCheck = async () => {
+    setChecking(true);
+    setCheckFailed(false);
+    try {
+      await onRetryConnection();
+      // If still not connected after the check, show a hint
+      // (the parent updates ollamaConnected, so we use a short delay to let it propagate)
+      setTimeout(() => {
+        setChecking(false);
+        // If the component is still showing (not connected), mark as failed
+        setCheckFailed(true);
+      }, 500);
+    } catch {
+      setChecking(false);
+      setCheckFailed(true);
+    }
+  };
+
   const steps = [
     {
       title: "Install Ollama",
       description: "Download and install Ollama to run models locally.",
       done: ollamaConnected,
       action: !ollamaConnected && (
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => window.open("https://ollama.com/download", "_blank")}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-accent border border-accent/30 hover:bg-accent/10 transition-colors"
-          >
-            <ExternalLink className="h-3 w-3" /> Get Ollama
-          </button>
-          <button
-            type="button"
-            onClick={onRetryConnection}
-            className="px-3 py-1.5 rounded-lg text-xs text-foreground-muted hover:text-foreground hover:bg-surface-hover border border-surface-border transition-colors"
-          >
-            Check Connection
-          </button>
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => shellOpen("https://ollama.com/download")}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-accent border border-accent/30 hover:bg-accent/10 transition-colors"
+            >
+              <ExternalLink className="h-3 w-3" /> Get Ollama
+            </button>
+            <button
+              type="button"
+              onClick={handleCheck}
+              disabled={checking}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-foreground-muted hover:text-foreground hover:bg-surface-hover border border-surface-border transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3 w-3 ${checking ? "animate-spin" : ""}`} />
+              {checking ? "Checking..." : "Check Connection"}
+            </button>
+          </div>
+          {checkFailed && !ollamaConnected && (
+            <p className="text-[11px] text-red-400">
+              Could not connect. Make sure Ollama is running (<code className="bg-surface-hover px-1 rounded">ollama serve</code>).
+            </p>
+          )}
         </div>
       ),
     },

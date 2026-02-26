@@ -268,14 +268,17 @@ export default function MessageBubble({ message, isStreaming, isLastAssistant, o
       >
         {isUser ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+        ) : isStreaming ? (
+          // During streaming: render plain text for smooth token-by-token display
+          // Avoids re-parsing markdown on every frame (which causes jitter)
+          <p className="text-sm whitespace-pre-wrap leading-relaxed">
+            {message.content}
+            <span className="inline-block w-2 h-4 bg-accent/60 animate-pulse ml-0.5 align-middle" />
+          </p>
         ) : (
           <div className="max-w-none">
             <MemoizedMarkdown content={message.content} />
           </div>
-        )}
-
-        {isStreaming && (
-          <span className="inline-block w-2 h-4 bg-accent/60 animate-pulse ml-0.5" />
         )}
 
         {/* Action buttons — assistant messages */}

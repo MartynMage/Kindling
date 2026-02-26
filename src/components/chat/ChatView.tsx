@@ -71,6 +71,8 @@ export default function ChatView({
   const selectedPromptRef = useRef<string | null>(null);
   // Track whether we stopped manually (to avoid duplicate message on done event)
   const stoppedManuallyRef = useRef(false);
+  // Batches rapid token updates into a single render per animation frame
+  const rafRef = useRef<number | null>(null);
 
   useEffect(() => { activeConvoRef.current = conversationId; }, [conversationId]);
   useEffect(() => { modelRef.current = model; }, [model]);
@@ -164,6 +166,7 @@ export default function ChatView({
   useEffect(() => {
     return () => {
       if (scrollThrottleRef.current) clearTimeout(scrollThrottleRef.current);
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
   }, []);
 
@@ -198,6 +201,7 @@ export default function ChatView({
       if (event.conversationId !== activeConvoRef.current) return;
 
       if (event.error) {
+        if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
         setIsStreaming(false);
         setStreamingContent("");
         streamingContentRef.current = "";
@@ -207,9 +211,17 @@ export default function ChatView({
       }
       if (event.token) {
         streamingContentRef.current += event.token;
-        setStreamingContent(streamingContentRef.current);
+        // Batch token updates — only flush to React state once per animation frame
+        // This prevents 20-50+ re-renders/sec when tokens arrive faster than 60fps
+        if (rafRef.current === null) {
+          rafRef.current = requestAnimationFrame(() => {
+            setStreamingContent(streamingContentRef.current);
+            rafRef.current = null;
+          });
+        }
       }
       if (event.done) {
+        if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
         const content = streamingContentRef.current;
         // Only append if we didn't already handle this via handleStop
         if (content && !stoppedManuallyRef.current) {
@@ -495,7 +507,7 @@ export default function ChatView({
     </div>
   );
 
-  if (!conversationId && messages.length === 0) {
+  if (messages.length === 0 && !isStreaming && !loadingMessages) {
     return (
       <div className="flex-1 flex flex-col">
         <div className="flex-1 flex flex-col items-center justify-center p-8">
@@ -551,7 +563,7 @@ export default function ChatView({
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-4 py-6">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-4 py-6 scroll-smooth-gpu">
         <div className="max-w-3xl mx-auto space-y-4">
           {loadingMessages ? (
             <div className="space-y-4 py-4">

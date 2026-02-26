@@ -114,6 +114,13 @@
     animation: slide-up 0.2s ease-out;
   }
 
+  /* GPU-accelerated scroll container for chat messages */
+  .scroll-smooth-gpu {
+    will-change: scroll-position;
+    -webkit-overflow-scrolling: touch;
+    contain: layout style;
+  }
+
   /* Slide-in from right for floating buttons */
   .animate-slide-in-right {
     animation: slide-in-right 0.15s ease-out;
