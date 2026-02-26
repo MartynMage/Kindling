@@ -507,7 +507,7 @@ export default function ChatView({
     </div>
   );
 
-  if (messages.length === 0 && !isStreaming && !loadingMessages) {
+  if ((!conversationId || messages.length === 0) && !isStreaming && !loadingMessages) {
     return (
       <div className="flex-1 flex flex-col">
         <div className="flex-1 flex flex-col items-center justify-center p-8">

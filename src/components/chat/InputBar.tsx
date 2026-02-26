@@ -74,36 +74,39 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(function InputBar({ o
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-end gap-2 bg-surface border border-surface-border rounded-2xl px-3 py-2">
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          placeholder="Type a message... (/ for prompts)"
-          aria-label="Message input"
-          disabled={disabled}
-          rows={1}
-          maxLength={MAX_MESSAGE_LENGTH}
-          className="flex-1 bg-transparent text-sm text-foreground placeholder:text-foreground-muted resize-none outline-none max-h-[200px] disabled:opacity-40"
-        />
-        {/* Clear button */}
-        {value && !isStreaming && (
-          <button
-            type="button"
-            onClick={() => setValue("")}
-            aria-label="Clear input"
-            className="flex-shrink-0 p-1.5 rounded-lg text-foreground-muted hover:text-foreground transition-colors"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        )}
+      <div className="flex items-center gap-2">
+        <div className="flex-1 flex items-center bg-surface border border-surface-border rounded-2xl px-3 py-2">
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            placeholder="Type a message... (/ for prompts)"
+            aria-label="Message input"
+            disabled={disabled}
+            rows={1}
+            maxLength={MAX_MESSAGE_LENGTH}
+            className="flex-1 bg-transparent text-sm leading-5 text-foreground placeholder:text-foreground-muted resize-none outline-none max-h-[200px] disabled:opacity-40"
+          />
+          {/* Clear button — inside the text field */}
+          {value && !isStreaming && (
+            <button
+              type="button"
+              onClick={() => setValue("")}
+              aria-label="Clear input"
+              className="flex-shrink-0 ml-1 p-1 rounded text-foreground-muted hover:text-foreground transition-colors"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+        {/* Send / Stop button — outside the text field */}
         {isStreaming ? (
           <button
             type="button"
             onClick={onStop}
             aria-label="Stop generating"
-            className="flex-shrink-0 p-2 rounded-xl bg-red-500/80 text-white hover:bg-red-500 transition-colors"
+            className="flex-shrink-0 p-2 rounded-full bg-red-500/80 text-white hover:bg-red-500 transition-colors"
           >
             <Square className="h-4 w-4" />
           </button>
@@ -113,7 +116,7 @@ const InputBar = forwardRef<InputBarHandle, InputBarProps>(function InputBar({ o
             onClick={handleSubmit}
             disabled={disabled || !value.trim()}
             aria-label="Send message"
-            className="flex-shrink-0 p-2 rounded-xl bg-accent text-white hover:bg-accent-dim transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            className="flex-shrink-0 p-2 rounded-full bg-accent text-white hover:bg-accent-dim transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Send className="h-4 w-4" />
           </button>
